@@ -250,4 +250,4 @@ docs/SCHEMA.md
 
 ## License
 
-TBD by the author.
+[MIT](LICENSE) © 2026 Robus Gauli.
