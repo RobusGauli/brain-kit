@@ -4,6 +4,13 @@ All notable changes to brain-kit. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [1.1.0] - 2026-10-27
+
+### Added
+- `brain query notes [TEXT]` finds notes in `Reference/` and `Content/`.
+  Before this, `capture note` wrote these notes but no query read them, and
+  the skill forbids direct vault reads. One match prints the whole note.
+
 ## [1.0.1] - 2026-10-27
 
 ### Changed
@@ -30,5 +37,6 @@ All notable changes to brain-kit. The format follows
 - First release: the `second-brain` skill and its CLI, installers for macOS,
   Linux and Windows, and CI on all three.
 
+[1.1.0]: https://github.com/RobusGauli/brain-kit/compare/v1.0.1...v1.1.0
 [1.0.1]: https://github.com/RobusGauli/brain-kit/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/RobusGauli/brain-kit/releases/tag/v1.0.0

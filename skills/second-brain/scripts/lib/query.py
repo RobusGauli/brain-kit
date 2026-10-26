@@ -243,3 +243,32 @@ def cmd_meetings(vault, args):
         proj = fm.get("project") or "—"
         print(f"- {fm.get('date')} [[{rel[:-3]}]] — {_title(rel, body)} "
               f"(project: {proj}; attendees: {att or '—'})")
+
+
+def cmd_notes(vault, args):
+    """Reference/ and Content/ notes. One match prints the whole note, so the
+    answer needs no follow-up read. Title matches win over body matches."""
+    notes = (_notes(vault, "Reference", "reference")
+             + _notes(vault, "Content", "content"))
+    toks = [t for t in slugify(args.text or "").split("-") if t]
+    if toks:
+        hits = [n for n in notes if _mentions_project(n[0], n[2], toks)]
+        if not hits:
+            hits = [n for n in notes if all(t in n[2].lower() for t in toks)]
+    else:
+        hits = notes
+    if len(hits) == 1 and toks:
+        rel, fm, body = hits[0]
+        print(f"# {_title(rel, body)} ([[{rel[:-3]}]])\n")
+        print(f"- type: {fm.get('type')}  created: {fm.get('created') or '—'}")
+        print(f"\n## Note body\n\n{body.strip()}")
+        return
+    label = f" matching '{args.text}'" if toks else ""
+    print(f"# Notes{label} ({len(hits)})")
+    for rel, fm, body in sorted(hits):
+        print(f"- [[{rel[:-3]}]] — {_title(rel, body)}")
+    if toks and not hits:
+        print(f"\nNo Reference or Content note matches '{args.text}'.")
+        print(f"\n## All notes ({len(notes)})")
+        for rel, fm, body in sorted(notes):
+            print(f"- [[{rel[:-3]}]] — {_title(rel, body)}")

@@ -2,7 +2,7 @@
 name: second-brain
 description: The user's second brain — two Obsidian vaults (work and personal) where everything the user asks to save is kept. Use for every "remember X", "note down / jot down / save / log / capture / write up X", "we decided X", "add a task", "remind me to X", "I'm waiting on X", "what am I working on", "what's on my plate", "who is X", and anything about notes, daily notes, meetings, interviews, transcripts, tasks, projects, people or follow-ups. Also use to set up or update brain-kit.
 metadata:
-  version: "1.0.1"
+  version: "1.1.0"
 ---
 
 # Second Brain
@@ -82,6 +82,7 @@ A write command creates every file the request needs in one step (note, tasks, f
 | "what's today look like" / "today's note" | `python3 "$B" query today` |
 | "who is X" / "my history with X" | `python3 "$B" query person "<name>"` |
 | "recent meetings" / "meetings since June" | `python3 "$B" query meetings [--since YYYY-MM-DD]` |
+| "find my note on X" / "what did I save about X" / "my reference notes" | `python3 "$B" query notes ["<words>"]` |
 | "log / write up this meeting" | `python3 "$B" capture meeting --title "T" [--date D] [--attendees "A, B"] [--transcript-file F --summary-file S] [--decision "…"]... [--task "…"]... [--followup "…"]...` |
 | "I interviewed X for role Y" | `python3 "$B" capture interview --candidate "Name" --role "R" --round N [--date D] [--transcript-file F --assessment-file A] [--note "…"]... [--verdict hire]` |
 | "add a task …" / "remind me to …" | `python3 "$B" capture task --desc "D" --area <area> [--owner "Name"] [--priority P] [--this-week]` |
