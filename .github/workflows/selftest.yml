@@ -31,6 +31,11 @@ jobs:
         run: bash tests/selftest.sh
       - name: Install test
         run: bash tests/install-test.sh
+        env:
+          BRAIN_KIT_ONLINE_TEST: "1"
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Version check
+        run: bash tests/version-check.sh
 
   # BusyBox sh, tar and coreutils, as on Alpine. The installer refuses root,
   # so the tests run as nobody.
@@ -61,10 +66,16 @@ jobs:
       - name: Install test (PowerShell 7)
         shell: pwsh
         run: ./tests/install-test.ps1
+        env:
+          BRAIN_KIT_ONLINE_TEST: "1"
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Install test (Windows PowerShell 5.1)
         if: success() || failure()
         shell: powershell
         run: powershell -NoProfile -ExecutionPolicy Bypass -File tests/install-test.ps1; exit $LASTEXITCODE
+        env:
+          BRAIN_KIT_ONLINE_TEST: "1"
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Self-test (Git Bash)
         if: success() || failure()
         shell: bash

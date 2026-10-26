@@ -1,6 +1,8 @@
 ---
 name: second-brain
 description: The user's second brain — two Obsidian vaults (work and personal) where everything the user asks to save is kept. Use for every "remember X", "note down / jot down / save / log / capture / write up X", "we decided X", "add a task", "remind me to X", "I'm waiting on X", "what am I working on", "what's on my plate", "who is X", and anything about notes, daily notes, meetings, interviews, transcripts, tasks, projects, people or follow-ups. Also use to set up or update brain-kit.
+metadata:
+  version: "1.0.1"
 ---
 
 # Second Brain
@@ -42,7 +44,7 @@ irm https://raw.githubusercontent.com/RobusGauli/brain-kit/main/install.ps1 | ie
 
 From Git Bash (Claude Code's shell on Windows), call it as `powershell -NoProfile -Command "irm https://raw.githubusercontent.com/RobusGauli/brain-kit/main/install.ps1 | iex"`.
 
-Both need Python 3.9 or newer. The installer copies the skill to `~/.local/share/brain-kit/` (`%LOCALAPPDATA%\brain-kit\` on Windows) and links it into the skill folders of Claude Code, Codex, Cursor and Kiro. It does not touch vaults or config. Use the path on its `cli:` line as `$B`. The output ends with `done.`. If that line is missing, the install failed: show the user the output. Run the installer again only when the user asks to update.
+Both need Python 3.9 or newer. The installer gets the latest release (not the `main` branch). It copies the skill to `~/.local/share/brain-kit/` (`%LOCALAPPDATA%\brain-kit\` on Windows) and links it into the skill folders of Claude Code, Codex, Cursor and Kiro. It does not touch vaults or config. Use the path on its `cli:` line as `$B`. The output ends with `done.`. If that line is missing, the install failed: show the user the output. To update later, use `python3 "$B" update` (see the router), not the installer.
 
 ## First check what is already true
 
@@ -93,6 +95,8 @@ A write command creates every file the request needs in one step (note, tasks, f
 | "mark X done" | `python3 "$B" done --task <slug>...` |
 | "switch to my personal / work brain" | `python3 "$B" mode personal --because "<the user's sentence, verbatim>"` (or `work`) |
 | "which brain am I in" | `python3 "$B" status` |
+| "is there a new version of brain-kit" | `python3 "$B" update --check` |
+| "update brain-kit" | `python3 "$B" update` |
 | "check the vault" | `python3 "$B" lint [--fix-safe]` |
 
 Task slugs for `promote` and `done` come from `python3 "$B" query tasks`.

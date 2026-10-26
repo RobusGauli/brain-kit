@@ -34,7 +34,8 @@ This project splits the job:
   - queries return one complete markdown answer, so the agent never needs to
     `ls` or `grep` the vault.
 
-The CLI is Python 3 standard library only. No dependencies, no network.
+The CLI is Python 3 standard library only. No dependencies, and no network,
+except `brain update`, which runs only when you ask.
 
 ## Install
 
@@ -65,14 +66,38 @@ On Windows the copy goes to `%LOCALAPPDATA%\brain-kit\`, the links are
 directory junctions (no admin rights needed), and PATH is not changed. Run the
 CLI as `py -3 <path>\scripts\brain`; the installer prints the exact command.
 
-The installer copies `skills/second-brain/` to
-`~/.local/share/brain-kit/` and links it into `~/.claude/skills/` and
+The installer downloads the **latest release** (not the `main` branch) and
+copies `skills/second-brain/` to `~/.local/share/brain-kit/`, with a receipt in
+`install.json`. It links it into `~/.claude/skills/` and
 `~/.agents/skills/`. It also links it into `~/.cursor/skills/` and
 `~/.kiro/skills/` when those tools are installed. It links the CLI to
 `~/.local/bin/brain`, unless a `brain` command already exists. It never
 replaces a file or link it did not create, and it never touches your vaults or
-config. Run it again to update. You can read
-[install.sh](install.sh) before you run it. It is short.
+config. You can read [install.sh](install.sh) before you run it. It is short.
+
+To install a specific version, pin it:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/RobusGauli/brain-kit/main/install.sh | sh -s v1.0.1
+```
+
+```powershell
+$env:BRAIN_KIT_REF = 'v1.0.1'; irm https://raw.githubusercontent.com/RobusGauli/brain-kit/main/install.ps1 | iex
+```
+
+### Updating
+
+| You installed with | Update with |
+|---|---|
+| `install.sh` / `install.ps1` | `brain update` (or ask your agent to "update brain-kit") |
+| `npx skills add` | `npx skills update` |
+| `gh skill install` | `gh skill update` |
+| `git clone` | `git pull` |
+
+`brain update --check` only reports whether a newer release exists.
+`brain update --to v1.0.0` installs a specific release, to pin or roll back.
+These are the only commands that use the network, and they never run on their
+own. See [CHANGELOG.md](CHANGELOG.md) for what changed in each release.
 
 ### Manual install
 
@@ -157,6 +182,7 @@ every flag (for example `capture meeting --project/--summary-stdin`,
 ```
 brain init     [--work-vault P] [--personal-vault P] [--owner NAME] [--org-domain D]
 brain status
+brain update   [--check] [--to TAG]   # the only command that uses the network
 brain mode     [work|personal] [--because "<the user's words>"]
 
 brain capture meeting   --title T [--date D] [--attendees "A, B"]
@@ -227,13 +253,32 @@ field, enum and naming rule.
 ## Development
 
 ```sh
-bash tests/selftest.sh
+bash tests/selftest.sh          # the CLI
+bash tests/install-test.sh      # install.sh, under sh, dash and bash
+bash tests/version-check.sh     # CLI, SKILL.md and CHANGELOG versions agree
+pwsh -File tests/install-test.ps1   # install.ps1 (Windows)
 ```
+
+Set `BRAIN_KIT_ONLINE_TEST=1` to also test the real download and `brain update`
+against GitHub.
+
+### Releasing
+
+1. Bump the version in `scripts/brain` (`VERSION`) and in the SKILL.md
+   `metadata.version`, and add a `CHANGELOG.md` entry.
+2. Merge to `main` with CI green.
+3. Tag and publish: `git tag -a v1.2.3 -m v1.2.3 && git push origin v1.2.3`,
+   then `gh release create v1.2.3 --notes-file <notes>`. CI fails a tag that
+   does not match the version.
+
+The installers and `brain update` pick up a release as soon as it is published.
+Users of `npx skills` follow `main`, so keep `main` releasable and do new work on
+branches.
 
 The self-test builds throwaway vaults under `.selftest-root/` (git-ignored,
 deleted on exit; set `KEEP=1` to keep it), never touches your real config, and
-exits non-zero on any failure. CI runs it on Linux (Python 3.9 and 3.12) and
-macOS (Python 3.12) via `.github/workflows/selftest.yml`.
+exits non-zero on any failure. CI runs everything on Linux (Ubuntu and Alpine),
+macOS and Windows via `.github/workflows/selftest.yml`.
 
 Layout:
 
@@ -244,7 +289,9 @@ skills/second-brain/
   scripts/brain          # CLI entry point
   scripts/lib/           # core (config, schema), capture, query, linter, writer, ...
   assets/templates/      # note body templates
-tests/selftest.sh
+tests/                   # selftest.sh, install-test.sh/.ps1, version-check.sh
+install.sh, install.ps1  # installers
+CHANGELOG.md
 docs/SCHEMA.md
 ```
 

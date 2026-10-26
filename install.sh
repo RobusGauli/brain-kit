@@ -3,10 +3,11 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/RobusGauli/brain-kit/main/install.sh | sh
 #
-# What it does (safe to re-run; re-running updates the code):
+# What it does (safe to re-run; re-running updates to the latest release):
 #   1. checks for python3 >= 3.9
-#   2. downloads the repo and keeps skills/second-brain/ under
-#      ${XDG_DATA_HOME:-~/.local/share}/brain-kit/
+#   2. downloads the latest GitHub release (not the main branch) and keeps
+#      skills/second-brain/ under ${XDG_DATA_HOME:-~/.local/share}/brain-kit/,
+#      with a receipt in install.json (version, ref, date)
 #   3. links that folder into ~/.claude/skills/ and ~/.agents/skills/
 #      (and ~/.cursor/skills/, ~/.kiro/skills/ when those tools are present)
 #   4. links the CLI to ~/.local/bin/brain, unless a `brain` command already exists
@@ -15,10 +16,14 @@
 # link it did not create. It does not run `brain init`.
 #
 # Output contract (agents read it): one `installed:` line, then `linked:` /
-# `skipped:` lines, then `cli: <path>`, `version: <v>` and a final `done.`.
+# `skipped:` lines, then `cli: <path>`, `version: <v>`, `source: <repo@ref>`
+# and a final `done.`.
 # No `done.` line means the install did not finish.
 #
-# Overrides: BRAIN_KIT_REF (branch or tag, default main),
+# Pin a version: `sh -s v1.0.1`, or BRAIN_KIT_REF=v1.0.1 (a tag, branch or
+# commit; default: the latest release).
+#
+# Overrides: BRAIN_KIT_REF (see above),
 #            BRAIN_KIT_SOURCE (a local checkout to install from, for testing),
 #            BRAIN_KIT_ALLOW_ROOT=1 (install as root on purpose).
 #
@@ -28,7 +33,7 @@
 main() {
   set -eu
   REPO="RobusGauli/brain-kit"
-  REF="${BRAIN_KIT_REF:-main}"
+  REF="${1:-${BRAIN_KIT_REF:-}}"   # empty: the latest release, resolved below
 
   [ -n "${HOME:-}" ] || die "HOME is not set."
   case "$(uname -s 2>/dev/null)" in
@@ -74,6 +79,7 @@ main() {
     cp -R "$BRAIN_KIT_SOURCE/skills/second-brain" "$STAGE/second-brain"
   else
     command -v curl >/dev/null 2>&1 || die "curl not found."
+    [ -n "$REF" ] || REF=$(latest_release)
     curl -fsSL "https://codeload.github.com/$REPO/tar.gz/$REF" -o "$STAGE/src.tgz" \
       || die "could not download $REPO@$REF."
     mkdir "$STAGE/src"
@@ -87,11 +93,24 @@ main() {
   chmod +x "$STAGE/second-brain/scripts/brain"
   VERSION=$(python3 -B "$STAGE/second-brain/scripts/brain" --version 2>&1) \
     || die "the downloaded CLI does not run: $VERSION"
+  SOURCE="$REPO@$REF"
+  [ -n "${BRAIN_KIT_SOURCE:-}" ] && SOURCE="local:$BRAIN_KIT_SOURCE"
+  python3 -B - "$STAGE/install.json" "${VERSION#second-brain }" "$SOURCE" <<'PY' \
+    || die "could not write the install receipt."
+import datetime, json, sys
+path, version, source = sys.argv[1:4]
+with open(path, "w", encoding="utf-8", newline="\n") as f:
+    json.dump({"version": version, "source": source, "method": "install.sh",
+               "installed_at": datetime.datetime.now(datetime.timezone.utc)
+                               .strftime("%Y-%m-%dT%H:%M:%SZ")}, f, indent=2)
+    f.write("\n")
+PY
 
   # Swap. Each step is a rename; a crash between them is repaired by the next run.
   [ -e "$SKILL" ] && mv "$SKILL" "$SKILL.old"
   mv "$STAGE/second-brain" "$SKILL"
   rm -rf "$SKILL.old"
+  mv "$STAGE/install.json" "$DATA/install.json"
   say "installed: $SKILL"
 
   # 3 + 4. links
@@ -110,12 +129,27 @@ main() {
 
   say "cli:       $SKILL/scripts/brain"
   say "version:   $VERSION"
+  say "source:    $SOURCE"
   say "next:      ask the user for their work vault folder, personal vault folder and name, then run"
   say "           python3 \"$SKILL/scripts/brain\" init --work-vault <work-folder> --personal-vault <personal-folder> --owner \"<Full Name>\""
   say "done."
 }
 
 say() { printf '%s\n' "$*"; }
+
+# The tag of the latest GitHub release, read from where /releases/latest
+# redirects (no API call, no rate limit). Never falls back to main: that would
+# quietly install unreleased code.
+latest_release() {
+  url=$(curl -fsSLI -o /dev/null -w '%{url_effective}' "https://github.com/$REPO/releases/latest" 2>/dev/null) || url=
+  tag=${url##*/releases/tag/}
+  case "$url" in
+    */releases/tag/?*) ;;
+    *) die "could not find the latest brain-kit release. Check your connection, or pick a version with BRAIN_KIT_REF=<tag>." ;;
+  esac
+  case "$tag" in */* | *[!A-Za-z0-9._-]*) die "unexpected release tag '$tag'." ;; esac
+  printf '%s' "$tag"
+}
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 
 cleanup() {
