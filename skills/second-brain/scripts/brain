@@ -8,7 +8,7 @@ from pathlib import Path
 # scripts/brain imports scripts/lib/*
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-VERSION = "1.0.1"
+VERSION = "1.1.0"
 
 from lib import capture, query, vaultdocs  # noqa: E402
 from lib.core import (config_path, current_mode, iso_week, name_parts,
@@ -139,6 +139,9 @@ def build_parser():
     qj.add_argument("name")
     qm = qsub.add_parser("meetings")
     qm.add_argument("--since")
+    qn = qsub.add_parser("notes", help="Reference and Content notes; one match "
+                         "prints the whole note")
+    qn.add_argument("text", nargs="?", default="")
 
     pr = sub.add_parser("promote", help="task backlog -> this-week")
     pr.add_argument("--task", action="append", required=True, metavar="SLUG")
@@ -312,7 +315,7 @@ def main():
         fn = {"tasks": query.cmd_tasks, "working-on": query.cmd_working_on,
               "waiting-on": query.cmd_waiting_on, "today": query.cmd_today,
               "person": query.cmd_person, "project": query.cmd_project,
-              "meetings": query.cmd_meetings}[args.what]
+              "meetings": query.cmd_meetings, "notes": query.cmd_notes}[args.what]
         return fn(vault, args)
     return 0
 

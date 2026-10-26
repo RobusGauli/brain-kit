@@ -185,6 +185,12 @@ assert_contains "$OUT" "role: —" "query person shows a dash for a missing role
 echo "$OUT" | grep -q "None" && fail "query person printed None" || ok "query person never prints None"
 OUT=$("$BRAIN" query meetings --since 2026-08-01)
 assert_contains "$OUT" "garden-club-planning-2026-08-14" "query meetings"
+OUT=$("$BRAIN" query notes "compost bin")
+assert_contains "$OUT" "## Note body" "query notes prints the single matching note"
+OUT=$("$BRAIN" query notes)
+assert_contains "$OUT" "compost-bin-guide" "query notes lists Reference notes"
+OUT=$("$BRAIN" query notes "no such thing")
+assert_contains "$OUT" "No Reference or Content note matches" "query notes reports no match"
 OUT=$("$BRAIN" query working-on)
 assert_contains "$OUT" "This-week tasks" "query working-on"
 
