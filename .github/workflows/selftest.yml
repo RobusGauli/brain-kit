@@ -62,9 +62,11 @@ jobs:
         shell: pwsh
         run: ./tests/install-test.ps1
       - name: Install test (Windows PowerShell 5.1)
+        if: success() || failure()
         shell: powershell
         run: powershell -NoProfile -ExecutionPolicy Bypass -File tests/install-test.ps1; exit $LASTEXITCODE
       - name: Self-test (Git Bash)
+        if: success() || failure()
         shell: bash
         run: |
           # setup-python provides python.exe only; selftest runs the CLI via its python3 shebang

@@ -20,6 +20,9 @@ function Check($cond, $msg) { if ($cond) { Ok $msg } else { Fail $msg } }
 # mode 'iex' pipes its text into Invoke-Expression, as `irm | iex` does,
 # and then prints ALIVE to show the host shell was not closed.
 function Run($homeDir, $localApp, [hashtable]$envs = @{}, $mode = 'file') {
+    # Windows PowerShell 5.1 turns a child's stderr into an error record, and
+    # 'Stop' would abort the test on the installer's own expected ERROR lines.
+    $ErrorActionPreference = 'Continue'
     $saved = @{}
     $all = @{ USERPROFILE = $homeDir; LOCALAPPDATA = $localApp; BRAIN_KIT_SOURCE = $repo }
     foreach ($k in $envs.Keys) { $all[$k] = $envs[$k] }
@@ -138,6 +141,7 @@ try {
     Check ((Test-Path (Join-Path $skill 'SKILL.md')) -and -not (Test-Path "$skill.old")) 'half-done swap repaired'
 
     # ---- the CLI writes LF and UTF-8 on Windows --------------------------------
+    $ErrorActionPreference = 'Continue'   # native stderr, see Run
     $cli = Join-Path $skill 'scripts\brain'
     $py = ([regex]::Match($r.Out, 'python:    (.+)')).Groups[1].Value.Trim() -split ' '
     $V = Join-Path $T 'vaults'
