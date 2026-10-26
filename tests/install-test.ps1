@@ -68,7 +68,7 @@ try {
     Check ($r.Out -match 'version:   second-brain') 'prints the version'
     Check ($r.Out -match '(?m)^done\.') 'prints done.'
     Check (-not (Get-ChildItem -LiteralPath $skill -Recurse -Force -Filter '__pycache__')) 'no __pycache__'
-    $left = @(Get-ChildItem -LiteralPath (Join-Path $L 'brain-kit') -Force | Where-Object Name -ne 'skills')
+    $left = @(Get-ChildItem -LiteralPath (Join-Path $L 'brain-kit') -Force | Where-Object { $_.Name -notin 'skills', 'install.json' })
     $left += @(Get-ChildItem -LiteralPath (Join-Path $L 'brain-kit\skills') -Force | Where-Object Name -ne 'second-brain')
     Check ($left.Count -eq 0) 'no stage or lock left'
 
@@ -76,6 +76,10 @@ try {
     $py = ([regex]::Match($r.Out, 'python:    (.+)')).Groups[1].Value.Trim() -split ' '
     $v = & $py[0] @($py | Select-Object -Skip 1) (Join-Path $skill 'scripts\brain') --version 2>&1 | Out-String
     Check ($v -match 'second-brain') "installed cli runs with '$($py -join ' ')'"
+
+    $rc = Get-Content -Raw -LiteralPath (Join-Path $L 'brain-kit\install.json') | ConvertFrom-Json
+    Check ($rc.method -eq 'install.ps1' -and $rc.source -eq "local:$repo" -and $rc.version -match '^\d+\.\d+\.\d+$') "writes the install receipt ($($rc | ConvertTo-Json -Compress))"
+    Check ($r.Out -match [regex]::Escape("source:    local:$repo")) 'prints the source'
 
     # ---- re-run updates in place ---------------------------------------------
     Set-Content -LiteralPath (Join-Path $skill 'stale-file') -Value stale
@@ -139,6 +143,40 @@ try {
     Move-Item -LiteralPath $skill -Destination "$skill.old"
     $r = Run $H $L
     Check ((Test-Path (Join-Path $skill 'SKILL.md')) -and -not (Test-Path "$skill.old")) 'half-done swap repaired'
+
+    # ---- online: the real download installs the latest release ----------------
+    # Set BRAIN_KIT_ONLINE_TEST=1 (CI does) to run it against GitHub.
+    if ($env:BRAIN_KIT_ONLINE_TEST -eq '1') {
+        $hdr = @{}; if ($env:GITHUB_TOKEN) { $hdr['Authorization'] = "Bearer $($env:GITHUB_TOKEN)" }
+        $want = (Invoke-RestMethod -Uri 'https://api.github.com/repos/RobusGauli/brain-kit/releases/latest' -Headers $hdr -UseBasicParsing).tag_name
+        $HO = Join-Path $T 'online'; $LO = Join-Path $HO 'AppData\Local'
+        New-Item -ItemType Directory -Force -Path $LO | Out-Null
+        $r = Run $HO $LO @{ BRAIN_KIT_SOURCE = '' }
+        Check ($r.Out -match [regex]::Escape("source:    RobusGauli/brain-kit@$want") -and $r.Out -match '(?m)^done\.') "online install gets the latest release $want ($($r.Out))"
+        $r = Run $HO $LO @{ BRAIN_KIT_SOURCE = ''; BRAIN_KIT_REF = 'v1.0.0' }
+        Check ($r.Out -match 'source:    RobusGauli/brain-kit@v1\.0\.0' -and $r.Out -match 'version:   second-brain 1\.0\.0') 'online install honours BRAIN_KIT_REF'
+
+        # brain update: install this checkout, then update it to a real release.
+        # This swaps the folder the running CLI was started from.
+        $HU = Join-Path $T 'online-update'; $LU = Join-Path $HU 'AppData\Local'
+        New-Item -ItemType Directory -Force -Path $LU | Out-Null
+        $r = Run $HU $LU
+        $pyU = ([regex]::Match($r.Out, 'python:    (.+)')).Groups[1].Value.Trim() -split ' '
+        $cliU = Join-Path $LU 'brain-kit\skills\second-brain\scripts\brain'
+        $ErrorActionPreference = 'Continue'
+        $savedLA = $env:LOCALAPPDATA; $env:LOCALAPPDATA = $LU
+        try {
+            $o = & $pyU[0] @($pyU | Select-Object -Skip 1) $cliU update --check 2>&1 | Out-String
+            Check ($LASTEXITCODE -eq 0 -and $o -match [regex]::Escape("latest:    $want")) "update --check reports the latest release ($o)"
+            $o = & $pyU[0] @($pyU | Select-Object -Skip 1) $cliU update --to v1.0.0 2>&1 | Out-String
+            Check ($LASTEXITCODE -eq 0) "update --to exits 0 ($o)"
+            $v = & $pyU[0] @($pyU | Select-Object -Skip 1) $cliU --version 2>&1 | Out-String
+            Check ($v -match 'second-brain 1\.0\.0') "update --to installed that release in the same place ($v)"
+            $rcU = Get-Content -Raw -LiteralPath (Join-Path $LU 'brain-kit\install.json') | ConvertFrom-Json
+            Check ($rcU.source -eq 'RobusGauli/brain-kit@v1.0.0') "update --to rewrote the receipt ($($rcU | ConvertTo-Json -Compress))"
+            Check (Test-Path (Join-Path $HU '.claude\skills\second-brain\SKILL.md')) 'junction still resolves after update'
+        } finally { $env:LOCALAPPDATA = $savedLA; $ErrorActionPreference = 'Stop' }
+    }
 
     # ---- the CLI writes LF and UTF-8 on Windows --------------------------------
     $ErrorActionPreference = 'Continue'   # native stderr, see Run

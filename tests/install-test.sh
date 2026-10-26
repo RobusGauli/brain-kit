@@ -20,10 +20,20 @@ mkdir -p "$T/sysbin"
 for tool in python3 mkdir rmdir mktemp cp mv rm ln readlink dirname find chmod tar gzip id uname; do
   p="$(command -v "$tool")" && ln -s "$p" "$T/sysbin/$tool"
 done
-# Fake curl: writes $FAKE_TGZ to the -o path, or fails when FAKE_CURL_FAIL=1.
+# Fake curl. The "latest release" lookup (-I ... -w) prints a redirect target
+# for tag $FAKE_LATEST (default v9.9.9), or fails when FAKE_LATEST_FAIL=1.
+# A download writes $FAKE_TGZ to the -o path and logs the URL to $FAKE_LOG;
+# FAKE_CURL_FAIL=1 fails it.
 cat > "$T/sysbin/curl" <<'EOF'
 #!/bin/sh
+case " $* " in
+  *" -fsSLI "*)
+    [ "${FAKE_LATEST_FAIL:-}" = 1 ] && exit 22
+    printf 'https://github.com/RobusGauli/brain-kit/releases/tag/%s' "${FAKE_LATEST:-v9.9.9}"; exit 0 ;;
+esac
 [ "${FAKE_CURL_FAIL:-}" = 1 ] && exit 22
+for a in "$@"; do case "$a" in https://*) url=$a ;; esac; done
+[ -n "${FAKE_LOG:-}" ] && printf '%s\n' "$url" >> "$FAKE_LOG"
 while [ $# -gt 0 ]; do [ "$1" = -o ] && { cp "$FAKE_TGZ" "$2"; exit; }; shift; done
 exit 2
 EOF
@@ -58,9 +68,22 @@ inst() {  # inst HOME [env...]: run the installer from the local checkout
 
 # ---- fresh install from the download path -----------------------------------
 H="$W/h1"; mkdir -p "$H/.cursor" "$H/.kiro"
-OUT=$(env -i HOME="$H" PATH="$T/sysbin" FAKE_TGZ="$T/src.tgz" "$SHBIN" "$REPO/install.sh" 2>&1); RC=$?
+LOG="$W/curl.log"; : > "$LOG"
+OUT=$(env -i HOME="$H" PATH="$T/sysbin" FAKE_TGZ="$T/src.tgz" FAKE_LOG="$LOG" "$SHBIN" "$REPO/install.sh" 2>&1); RC=$?
 [ $RC -eq 0 ] && ok "download install exits 0" || fail "download install exit $RC: $OUT"
 SKILL="$H/.local/share/brain-kit/skills/second-brain"
+assert_contains "$(cat "$LOG")" "codeload.github.com/RobusGauli/brain-kit/tar.gz/v9.9.9" "downloads the latest release, not main"
+assert_contains "$OUT" "source:    RobusGauli/brain-kit@v9.9.9" "prints the release it installed"
+R="$H/.local/share/brain-kit/install.json"
+RV=$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d["version"], d["source"], d["method"], d["installed_at"][:2])' "$R" 2>&1)
+assert_contains "$RV" "$(python3 "$REPO/skills/second-brain/scripts/brain" --version | cut -d' ' -f2) RobusGauli/brain-kit@v9.9.9 install.sh 20" "writes the install receipt"
+
+# A pin wins over the latest release: positional argument, then BRAIN_KIT_REF.
+: > "$LOG"
+env -i HOME="$H" PATH="$T/sysbin" FAKE_TGZ="$T/src.tgz" FAKE_LOG="$LOG" "$SHBIN" "$REPO/install.sh" v1.2.3 >/dev/null 2>&1
+env -i HOME="$H" PATH="$T/sysbin" FAKE_TGZ="$T/src.tgz" FAKE_LOG="$LOG" BRAIN_KIT_REF=main "$SHBIN" "$REPO/install.sh" >/dev/null 2>&1
+assert_contains "$(sed -n 1p "$LOG")" "tar.gz/v1.2.3" "positional argument pins the version"
+assert_contains "$(sed -n 2p "$LOG")" "tar.gz/main" "BRAIN_KIT_REF pins the version"
 [ -f "$SKILL/SKILL.md" ] && ok "skill extracted" || fail "skill not extracted"
 for d in .claude .agents .cursor .kiro; do
   [ "$(readlink "$H/$d/skills/second-brain")" = "$SKILL" ] && ok "linked into $d" || fail "not linked into $d"
@@ -70,7 +93,7 @@ done
 assert_contains "$OUT" "cli:       $SKILL/scripts/brain" "prints the cli path"
 assert_contains "$OUT" "version:   second-brain" "prints the version"
 assert_contains "$OUT" "done." "prints done."
-[ -z "$(ls -A "$H/.local/share/brain-kit" | grep -v '^skills$')" ] && ok "no stage or lock left" || fail "leftovers: $(ls -A "$H/.local/share/brain-kit")"
+[ -z "$(ls -A "$H/.local/share/brain-kit" | grep -vE '^(skills|install.json)$')" ] && ok "no stage or lock left" || fail "leftovers: $(ls -A "$H/.local/share/brain-kit")"
 
 # ---- re-run updates in place --------------------------------------------------
 echo stale > "$SKILL/stale-file"
@@ -123,6 +146,11 @@ check_fail() {  # check_fail NAME OUTPUT RC
 }
 OUT=$(inst "$H" BRAIN_KIT_SOURCE="$W/nothing"); check_fail "bad source" "$OUT" $?
 OUT=$(env -i HOME="$H" PATH="$T/sysbin" FAKE_CURL_FAIL=1 "$SHBIN" "$REPO/install.sh" 2>&1); check_fail "failed download" "$OUT" $?
+: > "$W/curl2.log"
+OUT=$(env -i HOME="$H" PATH="$T/sysbin" FAKE_LATEST_FAIL=1 FAKE_TGZ="$T/src.tgz" FAKE_LOG="$W/curl2.log" "$SHBIN" "$REPO/install.sh" 2>&1); check_fail "no latest release" "$OUT" $?
+assert_contains "$OUT" "could not find the latest brain-kit release" "no latest release explains itself"
+[ ! -s "$W/curl2.log" ] && ok "no latest release does not fall back to main" || fail "downloaded anyway: $(cat "$W/curl2.log")"
+OUT=$(env -i HOME="$H" PATH="$T/sysbin" FAKE_LATEST='../../evil' FAKE_TGZ="$T/src.tgz" "$SHBIN" "$REPO/install.sh" 2>&1); check_fail "odd release tag" "$OUT" $?
 echo "not a tarball" > "$W/bad.tgz"
 OUT=$(env -i HOME="$H" PATH="$T/sysbin" FAKE_TGZ="$W/bad.tgz" "$SHBIN" "$REPO/install.sh" 2>&1); check_fail "corrupt download" "$OUT" $?
 OUT=$(inst "$H" BRAIN_KIT_SOURCE="$T/broken"); check_fail "broken cli" "$OUT" $?
@@ -133,7 +161,7 @@ rmdir "$H/.local/share/brain-kit/.lock"
 OUT=$(env -i HOME="$H" PATH="$T/rootbin:$T/sysbin" BRAIN_KIT_SOURCE="$REPO" "$SHBIN" "$REPO/install.sh" 2>&1); check_fail "root" "$OUT" $?
 OUT=$(env -i HOME="$H" PATH="$T/gitbash:$T/sysbin" BRAIN_KIT_SOURCE="$REPO" "$SHBIN" "$REPO/install.sh" 2>&1); check_fail "git bash" "$OUT" $?
 assert_contains "$OUT" "install.ps1" "git bash points to install.ps1"
-[ -z "$(ls -A "$H/.local/share/brain-kit" | grep -v '^skills$')" ] && ok "failures leave no stage or lock" || fail "leftovers: $(ls -A "$H/.local/share/brain-kit")"
+[ -z "$(ls -A "$H/.local/share/brain-kit" | grep -vE '^(skills|install.json)$')" ] && ok "failures leave no stage or lock" || fail "leftovers: $(ls -A "$H/.local/share/brain-kit")"
 
 # ---- HOME unset ---------------------------------------------------------------
 OUT=$(env -i PATH="$T/sysbin" BRAIN_KIT_SOURCE="$REPO" "$SHBIN" "$REPO/install.sh" 2>&1); RC=$?
@@ -156,6 +184,46 @@ done
 [ $BAD -eq 0 ] && ok "cut-off script runs nothing at all $((N - 1)) cut points" || fail "$BAD cut points ran part of the install"
 
 done
+
+# ---- online: the real download installs the latest release ------------------
+# Set BRAIN_KIT_ONLINE_TEST=1 (CI does) to run it against GitHub.
+if [ "${BRAIN_KIT_ONLINE_TEST:-}" = 1 ]; then
+  SH=online
+  AUTH=(); [ -n "${GITHUB_TOKEN:-}" ] && AUTH=(-H "Authorization: Bearer $GITHUB_TOKEN")
+  WANT=$(curl -fsSL "${AUTH[@]+"${AUTH[@]}"}" https://api.github.com/repos/RobusGauli/brain-kit/releases/latest \
+         | python3 -c 'import json,sys; print(json.load(sys.stdin)["tag_name"])')
+  PATHS="$T/sysbin-real"; mkdir -p "$PATHS"
+  for tool in sh curl python3 mkdir rmdir mktemp cp mv rm ln readlink dirname find chmod tar gzip id uname; do
+    p="$(command -v "$tool")" && ln -s "$p" "$PATHS/$tool"
+  done
+  OUT=$(env -i HOME="$T/online" PATH="$PATHS" "$(command -v sh)" "$REPO/install.sh" 2>&1)
+  assert_contains "$OUT" "source:    RobusGauli/brain-kit@$WANT" "online install gets the latest release $WANT"
+  assert_contains "$OUT" "done." "online install finishes"
+  OUT=$(env -i HOME="$T/online" PATH="$PATHS" "$(command -v sh)" "$REPO/install.sh" v1.0.0 2>&1)
+  assert_contains "$OUT" "version:   second-brain 1.0.0" "online install honours a pinned tag"
+
+  # brain update: install this checkout, then update it to a real release.
+  HU="$T/online-update"
+  env -i HOME="$HU" PATH="$PATHS" BRAIN_KIT_SOURCE="$REPO" "$(command -v sh)" "$REPO/install.sh" >/dev/null 2>&1
+  CLI="$HU/.local/share/brain-kit/skills/second-brain/scripts/brain"
+  OUT=$(env -i HOME="$HU" PATH="$PATHS" python3 "$CLI" update --check 2>&1); RC=$?
+  [ $RC -eq 0 ] && ok "update --check exits 0" || fail "update --check exit $RC: $OUT"
+  assert_contains "$OUT" "latest:    $WANT" "update --check reports the latest release"
+  OUT=$(env -i HOME="$HU" PATH="$PATHS" python3 "$CLI" update --to v1.0.0 2>&1); RC=$?
+  [ $RC -eq 0 ] && ok "update --to exits 0" || fail "update --to exit $RC: $OUT"
+  assert_contains "$(python3 "$CLI" --version)" "second-brain 1.0.0" "update --to installed that release in the same place"
+  assert_contains "$(cat "$HU/.local/share/brain-kit/install.json")" "RobusGauli/brain-kit@v1.0.0" "update --to rewrote the receipt"
+  OUT=$(cd "$T" && python3 -c "import sys; sys.path.insert(0, '$REPO/skills/second-brain/scripts'); from lib import update; sys.exit(update.run('0.0.1', check=True))" 2>&1)
+  assert_contains "$OUT" "update available: 0.0.1 -> $WANT" "update --check sees a newer release"
+fi
+
+# ---- brain update on a copy the installer did not make (offline) -------------
+SH=update
+OUT=$(python3 "$REPO/skills/second-brain/scripts/brain" update --to v1.0.0 2>&1); RC=$?
+[ $RC -eq 1 ] && ok "update refuses a copy it did not install" || fail "update on a foreign copy exit $RC: $OUT"
+assert_contains "$OUT" "npx skills update" "update points to the right tool"
+OUT=$(python3 "$REPO/skills/second-brain/scripts/brain" update --to '../x' 2>&1); RC=$?
+[ $RC -eq 2 ] && ok "update --to rejects a non-tag" || fail "update --to ../x exit $RC: $OUT"
 
 echo
 if [ "$FAILS" -eq 0 ]; then

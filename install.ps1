@@ -3,10 +3,11 @@
 #
 #   irm https://raw.githubusercontent.com/RobusGauli/brain-kit/main/install.ps1 | iex
 #
-# What it does (safe to re-run; re-running updates the code):
+# What it does (safe to re-run; re-running updates to the latest release):
 #   1. finds a working Python 3.9+ (py -3, python3 or python; not the Store stub)
-#   2. downloads the repo and keeps skills\second-brain\ under
-#      %LOCALAPPDATA%\brain-kit\
+#   2. downloads the latest GitHub release (not the main branch) and keeps
+#      skills\second-brain\ under %LOCALAPPDATA%\brain-kit\, with a receipt in
+#      install.json (version, ref, date)
 #   3. links that folder into ~\.claude\skills\ and ~\.agents\skills\
 #      (and ~\.cursor\skills\, ~\.kiro\skills\ when those tools are present),
 #      using directory junctions, which need no admin rights
@@ -15,10 +16,13 @@
 # it did not create, and does not change PATH. It does not run `brain init`.
 #
 # Output contract (agents read it): `installed:`, then `linked:` / `skipped:`
-# lines, then `python:`, `cli:`, `version:` and a final `done.`.
+# lines, then `python:`, `cli:`, `version:`, `source:` and a final `done.`.
 # No `done.` line means the install did not finish.
 #
-# Overrides: $env:BRAIN_KIT_REF (branch or tag, default main),
+# Pin a version: $env:BRAIN_KIT_REF = 'v1.0.1' (a tag, branch or commit;
+# default: the latest release).
+#
+# Overrides: $env:BRAIN_KIT_REF (see above),
 #            $env:BRAIN_KIT_SOURCE (a local checkout to install from, for testing).
 #
 # Errors throw instead of calling `exit`, because `irm | iex` runs inside the
@@ -30,7 +34,7 @@ function Install-BrainKit {
     Set-StrictMode -Version 2.0
 
     $repo = 'RobusGauli/brain-kit'
-    $ref = if ($env:BRAIN_KIT_REF) { $env:BRAIN_KIT_REF } else { 'main' }
+    $ref = $env:BRAIN_KIT_REF   # empty: the latest release, resolved below
     if (-not $env:USERPROFILE -or -not $env:LOCALAPPDATA) {
         throw 'USERPROFILE or LOCALAPPDATA is not set.'
     }
@@ -71,8 +75,9 @@ function Install-BrainKit {
             Copy-Item -LiteralPath $src -Destination $new -Recurse
         } else {
             $zip = Join-Path $stage 'src.zip'
+            [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+            if (-not $ref) { $ref = Get-LatestRelease $repo }
             try {
-                [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
                 Invoke-WebRequest -UseBasicParsing -Uri "https://codeload.github.com/$repo/zip/$ref" -OutFile $zip
             } catch { throw "could not download $repo@$ref. $($_.Exception.Message)" }
             $unz = Join-Path $stage 'src'
@@ -89,11 +94,21 @@ function Install-BrainKit {
         $cliNew = Join-Path $new 'scripts\brain'
         $version = Invoke-Python $py @('-B', $cliNew, '--version')
         if ($LASTEXITCODE -ne 0 -or -not $version) { throw "the downloaded CLI does not run: $version" }
+        $source = if ($env:BRAIN_KIT_SOURCE) { "local:$($env:BRAIN_KIT_SOURCE)" } else { "$repo@$ref" }
+        $receipt = [ordered]@{
+            version      = ($version -replace '^second-brain ', '')
+            source       = $source
+            method       = 'install.ps1'
+            installed_at = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ')
+        }
+        $json = (($receipt | ConvertTo-Json) -replace "`r`n", "`n") + "`n"
+        [IO.File]::WriteAllText((Join-Path $stage 'install.json'), $json, (New-Object Text.UTF8Encoding $false))
 
         # Swap. Each step is a rename; a crash between them is repaired by the next run.
         if (Test-Path -LiteralPath $skill) { Move-Item -LiteralPath $skill -Destination $old }
         Move-Item -LiteralPath $new -Destination $skill
         if (Test-Path -LiteralPath $old) { Remove-Item -LiteralPath $old -Recurse -Force }
+        Move-Item -LiteralPath (Join-Path $stage 'install.json') -Destination (Join-Path $data 'install.json') -Force
         Write-Output "installed: $skill"
 
         # 3. links
@@ -111,6 +126,7 @@ function Install-BrainKit {
         Write-Output "python:    $pyCmd"
         Write-Output "cli:       $cli"
         Write-Output "version:   $version"
+        Write-Output "source:    $source"
         Write-Output 'next:      ask the user for their work vault folder, personal vault folder and name, then run'
         Write-Output "           $pyCmd `"$cli`" init --work-vault <work-folder> --personal-vault <personal-folder> --owner `"<Full Name>`""
         Write-Output 'done.'
@@ -118,6 +134,23 @@ function Install-BrainKit {
         if (Test-Path -LiteralPath $stage) { Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue }
         Remove-Item -LiteralPath $lock -Force -ErrorAction SilentlyContinue
     }
+}
+
+# The tag of the latest GitHub release, read from where /releases/latest
+# redirects (no API call, no rate limit). Never falls back to main: that would
+# quietly install unreleased code.
+function Get-LatestRelease($repo) {
+    $loc = $null
+    try {
+        $req = [Net.HttpWebRequest]::Create("https://github.com/$repo/releases/latest")
+        $req.Method = 'HEAD'
+        $req.AllowAutoRedirect = $false
+        $req.UserAgent = 'brain-kit-installer'
+        try { $resp = $req.GetResponse() } catch [Net.WebException] { $resp = $_.Exception.Response }
+        if ($resp) { $loc = $resp.Headers['Location']; $resp.Close() }
+    } catch { $loc = $null }
+    if ("$loc" -match '/releases/tag/([A-Za-z0-9._-]+)$') { return $Matches[1] }
+    throw 'could not find the latest brain-kit release. Check your connection, or pick a version with $env:BRAIN_KIT_REF = ''<tag>''.'
 }
 
 # Returns the command (as an array) of the first Python 3.9+ that really runs.
