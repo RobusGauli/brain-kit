@@ -28,6 +28,8 @@ assert_contains() { echo "$1" | grep -qF -- "$2" && ok "$3" || fail "$3 (missing
 assert_file() { [ -f "$BRAIN_ROOT/$1" ] && ok "exists $1" || fail "missing file $1"; }
 assert_exit() { [ "$1" -eq "$2" ] && ok "$3" || fail "$3 (exit $1, want $2)"; }
 snapshot() { find "$1" -name '*.md' -exec cksum {} + | sort; }
+# A path as the CLI prints it: Windows form under Git Bash, unchanged elsewhere.
+native() { if command -v cygpath >/dev/null 2>&1; then cygpath -w "$1"; else printf '%s' "$1"; fi; }
 section() { awk -v h="## $2" '$0==h{f=1;next} /^#/{f=0} f' "$1"; }
 
 rm -rf "$REPO/.selftest-root"
@@ -468,7 +470,7 @@ twoenv() {
 }
 OUT=$(twoenv status 2>&1)
 assert_exit $? 0 "two-vault env resolves with no common parent"
-assert_contains "$OUT" "$TWO/a/vault-work" "work vault path reported"
+assert_contains "$OUT" "$(native "$TWO/a/vault-work")" "work vault path reported"
 assert_contains "$OUT" "vault-personal" "personal vault path reported"
 assert_contains "$OUT" "config: BRAIN_WORK_VAULT+BRAIN_PERSONAL_VAULT" "config source reported"
 twoenv mode personal --because "use my personal vault" >/dev/null
@@ -594,8 +596,8 @@ OUT=$(cb init --work-vault "$IV/work" --personal-vault "$IV/personal" \
 assert_exit $? 0 "init exit 0"
 [ -f "$CFG" ] && ok "init writes the config file" || fail "config file missing"
 C=$(cat "$CFG")
-assert_contains "$C" "BRAIN_WORK_VAULT=$IV/work" "config has the work vault"
-assert_contains "$C" "BRAIN_PERSONAL_VAULT=$IV/personal" "config has the personal vault"
+assert_contains "$C" "BRAIN_WORK_VAULT=$(native "$IV/work")" "config has the work vault"
+assert_contains "$C" "BRAIN_PERSONAL_VAULT=$(native "$IV/personal")" "config has the personal vault"
 assert_contains "$C" "BRAIN_OWNER=Maya Chen" "config has the owner"
 assert_contains "$C" "BRAIN_ORG_DOMAIN=example.com" "config has the org domain"
 for d in Daily Meetings Transcripts Interviews Projects People Tasks Follow-ups \
@@ -618,7 +620,7 @@ OUT=$(cb status)
 assert_exit $? 0 "status works from the config file alone"
 assert_contains "$OUT" "owner: Maya Chen" "owner read from config file"
 assert_contains "$OUT" "org domain: example.com" "org domain read from config file"
-assert_contains "$OUT" "($CFG)" "status names the config file as the source"
+assert_contains "$OUT" "($(native "$CFG"))" "status names the config file as the source"
 cb lint >/dev/null; assert_exit $? 0 "freshly initialised vaults lint clean"
 
 # org domain: emails at the domain are internal, others external
@@ -677,7 +679,7 @@ assert_contains "$OUT" "Nothing was written" "non-Latin owner refusal writes not
 [ -f "$NL/second-brain/config" ] && fail "config written despite bad owner" \
   || ok "no config written for a bad owner"
 mkdir -p "$NL/second-brain"
-printf 'BRAIN_WORK_VAULT=%s\nBRAIN_OWNER=李雷\n' "$PV/work" > "$NL/second-brain/config"
+printf 'BRAIN_WORK_VAULT=%s\nBRAIN_OWNER=李雷\n' "$(native "$PV/work")" > "$NL/second-brain/config"
 nl --help >/dev/null 2>&1; assert_exit $? 0 "--help works with a bad owner in config"
 OUT=$(nl status 2>&1)
 assert_exit $? 0 "status works with a bad owner in config"
@@ -693,7 +695,7 @@ echo "my own notes" >> "$IV/work/README.md"
 OUT=$(cb init --org-domain example.net 2>&1)
 assert_exit $? 0 "re-run init exit 0"
 C=$(cat "$CFG")
-assert_contains "$C" "BRAIN_WORK_VAULT=$IV/work" "re-run init keeps the vault paths"
+assert_contains "$C" "BRAIN_WORK_VAULT=$(native "$IV/work")" "re-run init keeps the vault paths"
 assert_contains "$C" "BRAIN_ORG_DOMAIN=example.net" "re-run init updates the given key"
 grep -q "my own notes" "$IV/work/README.md" \
   && ok "re-run init leaves existing files alone" || fail "init overwrote README"

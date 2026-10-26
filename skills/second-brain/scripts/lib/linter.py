@@ -23,14 +23,15 @@ WIKILINK_FIELDS = {
 
 
 def vault_files(vault):
-    """All lintable .md files, sorted, as paths relative to vault root."""
+    """All lintable .md files, sorted, as paths relative to vault root.
+    Always '/'-separated and sorted as strings, so the result is the same on
+    Windows (where str(Path) uses '\\' and Path sorting ignores case)."""
     out = []
     for folder in sorted(TYPE_BY_FOLDER):
         d = vault / folder
         if not d.is_dir():
             continue
-        for f in sorted(d.rglob("*.md")):
-            out.append(str(f.relative_to(vault)))
+        out += sorted(f.relative_to(vault).as_posix() for f in d.rglob("*.md"))
     return out
 
 
