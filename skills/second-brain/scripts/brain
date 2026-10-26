@@ -1,0 +1,310 @@
+#!/usr/bin/env python3
+"""brain — deterministic second-brain CLI for two Obsidian vaults. Stdlib only."""
+
+import argparse
+import sys
+from pathlib import Path
+
+# scripts/brain imports scripts/lib/*
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+VERSION = "1.0.0"
+
+from lib import capture, query, vaultdocs  # noqa: E402
+from lib.core import (config_path, current_mode, iso_week, name_parts,
+                      owner_name, owner_problem, read_config, require_owner,
+                      resolve_ctx, set_mode, setting, today, vault_path,
+                      write_config)  # noqa: E402
+from lib.linter import fix_safe, lint_vault, orphans  # noqa: E402
+
+
+def build_parser():
+    p = argparse.ArgumentParser(
+        prog="brain",
+        description="second-brain — deterministic CLI for two Obsidian vaults "
+                    "(work + personal)")
+    p.add_argument("--version", action="version", version=f"second-brain {VERSION}")
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    ip = sub.add_parser("init", help="write the config file and create the vault "
+                                     "folders (safe to re-run)")
+    ip.add_argument("--work-vault", metavar="PATH")
+    ip.add_argument("--personal-vault", metavar="PATH")
+    ip.add_argument("--owner", metavar="NAME",
+                    help="your People-note name, e.g. \"Maya Chen\"")
+    ip.add_argument("--org-domain", metavar="DOMAIN",
+                    help="emails at this domain are org: internal (e.g. example.com)")
+
+    sub.add_parser("status", help="mode, vault path, today, ISO week")
+
+    mp = sub.add_parser("mode", help="get/set active vault")
+    mp.add_argument("value", nargs="?", choices=["work", "personal"])
+    mp.add_argument("--because", metavar="QUOTE",
+                    help="the user's own words asking for the other vault; "
+                         "required to CHANGE the mode and must name that vault")
+
+    cap = sub.add_parser("capture", help="capture artifacts atomically")
+    csub = cap.add_subparsers(dest="what", required=True)
+
+    m = csub.add_parser("meeting")
+    m.add_argument("--title", required=True)
+    m.add_argument("--date")
+    m.add_argument("--attendees")
+    m.add_argument("--project")
+    m.add_argument("--transcript-file",
+                   help="raw source file; REQUIRES --summary-file")
+    m.add_argument("--task", action="append", metavar="DESC|AREA|PRIORITY|OWNER")
+    m.add_argument("--followup", action="append", metavar="WHO|ABOUT")
+    m.add_argument("--decision", action="append", metavar="TEXT",
+                   help="repeatable; one literal decision from the source")
+    m.add_argument("--summary-file")
+    m.add_argument("--summary-stdin", action="store_true")
+
+    i = csub.add_parser("interview")
+    i.add_argument("--candidate", required=True)
+    i.add_argument("--role", required=True)
+    i.add_argument("--round", required=True)
+    i.add_argument("--date")
+    i.add_argument("--transcript-file",
+                   help="raw source file; REQUIRES --assessment-file or --note")
+    i.add_argument("--note", action="append", metavar="TEXT",
+                   help="repeatable; goes to ## Notes During Interview")
+    i.add_argument("--assessment-file", help="prose for ## Assessment")
+    i.add_argument("--verdict", choices=["pending", "hire", "no-hire"],
+                   help="set from an explicit recommendation in the source")
+    i.add_argument("--summary-file")
+    i.add_argument("--summary-stdin", action="store_true")
+
+    t = csub.add_parser("task")
+    t.add_argument("--desc", required=True)
+    t.add_argument("--area", required=True,
+                   choices=["client", "internal", "admin", "learning"])
+    t.add_argument("--owner", metavar="NAME",
+                   help="who owes this (default: the vault owner). Someone else's action "
+                        "item must carry their name.")
+    t.add_argument("--context", help="one line of source context for the body")
+    t.add_argument("--priority", choices=["high", "medium", "low"])
+    t.add_argument("--project")
+    t.add_argument("--source")
+    t.add_argument("--this-week", action="store_true", dest="this_week",
+                   help="capture directly into this week's priorities")
+
+    n = csub.add_parser("note")
+    n.add_argument("--title", required=True)
+    n.add_argument("--folder", choices=["Reference", "Content"])
+    n.add_argument("--body-file")
+
+    pe = csub.add_parser("person")
+    pe.add_argument("--name", required=True)
+    pe.add_argument("--org", choices=["internal", "external"],
+                    help="internal = your own organization")
+    pe.add_argument("--role")
+    pe.add_argument("--email")
+
+    f = csub.add_parser("followup")
+    f.add_argument("--who", required=True)
+    f.add_argument("--about", required=True)
+
+    x = sub.add_parser("extract-tasks",
+                       help="atomic tasks-only capture (e.g. from a transcript)")
+    x.add_argument("--task", action="append", required=True,
+                   metavar="DESC|AREA|PRIORITY|OWNER")
+    x.add_argument("--project")
+    x.add_argument("--source")
+    x.add_argument("--transcript-file")
+    x.add_argument("--title")
+    x.add_argument("--date")
+
+    q = sub.add_parser("query", help="one-shot read queries")
+    qsub = q.add_subparsers(dest="what", required=True)
+    qt = qsub.add_parser("tasks")
+    qt.add_argument("--status", choices=["backlog", "this-week", "done"])
+    qt.add_argument("--project")
+    qt.add_argument("--owner", default="me",
+                    help="'me' (default, the vault owner), 'all', or a person's name")
+    qsub.add_parser("working-on")
+    qsub.add_parser("waiting-on")
+    qsub.add_parser("today")
+    qp = qsub.add_parser("person")
+    qp.add_argument("name")
+    qj = qsub.add_parser("project")
+    qj.add_argument("name")
+    qm = qsub.add_parser("meetings")
+    qm.add_argument("--since")
+
+    pr = sub.add_parser("promote", help="task backlog -> this-week")
+    pr.add_argument("--task", action="append", required=True, metavar="SLUG")
+    pr.add_argument("--week", default="auto")
+
+    dn = sub.add_parser("done", help="mark task done")
+    dn.add_argument("--task", action="append", required=True, metavar="SLUG")
+
+    lp = sub.add_parser("lint", help="validate vault(s)")
+    lp.add_argument("--fix-safe", action="store_true")
+    lp.add_argument("--vault", choices=["work", "personal", "both"], default="both")
+
+    dp = sub.add_parser("doctor", help="vault health: lint errors, broken links, orphans")
+    dp.add_argument("--vault", choices=["work", "personal", "both"], default="both")
+    return p
+
+
+def cmd_init(args):
+    if args.owner is not None and not name_parts(args.owner):
+        print(f"ERROR: --owner {args.owner!r} has no Latin letters. Your People "
+              "note is named Firstname-Lastname in Latin script; pass a "
+              "romanized spelling. Nothing was written.", file=sys.stderr)
+        return 2
+    cfg = read_config()
+    for key, val in (("BRAIN_WORK_VAULT", args.work_vault),
+                     ("BRAIN_PERSONAL_VAULT", args.personal_vault),
+                     ("BRAIN_OWNER", args.owner),
+                     ("BRAIN_ORG_DOMAIN", args.org_domain)):
+        if val:
+            if key.endswith("_VAULT"):
+                val = str(Path(val).expanduser().resolve())
+            cfg[key] = val.strip()
+    if not (cfg.get("BRAIN_WORK_VAULT") or cfg.get("BRAIN_PERSONAL_VAULT")
+            or cfg.get("BRAIN_ROOT")):
+        print("ERROR: brain init needs --work-vault PATH (and usually "
+              "--personal-vault PATH).", file=sys.stderr)
+        return 2
+    path = write_config(cfg)
+    print(f"config: {path}")
+    owner = cfg.get("BRAIN_OWNER") or setting("BRAIN_OWNER")
+    parts = name_parts(owner)
+    owner_link = f"[[People/{'-'.join(parts)}]]" if parts else None
+    for mode, key in (("work", "BRAIN_WORK_VAULT"),
+                      ("personal", "BRAIN_PERSONAL_VAULT")):
+        if cfg.get(key):
+            vault = Path(cfg[key]).expanduser()
+            print(f"{mode} vault: {vault}")
+            for line in vaultdocs.write_all(vault, mode, owner_link):
+                print(f"  {line}")
+    if not owner_link:
+        print("NOTE: no usable owner set yet. Run `brain init --owner "
+              "\"Your Name\"` (Latin letters) before capturing.")
+    return 0
+
+
+def cmd_status(ctx):
+    mode = current_mode(ctx)
+    print(f"second-brain {VERSION}")
+    print(f"mode: {mode}")
+    problem = owner_problem()
+    if problem == "unset":
+        print("owner: (unset — run brain init --owner NAME)")
+    elif problem:
+        print(f"owner: {owner_name()} (INVALID: {problem} — run brain init "
+              "--owner NAME)")
+    else:
+        print(f"owner: {owner_name()}")
+    print(f"org domain: {setting('BRAIN_ORG_DOMAIN') or '(unset)'}")
+    print(f"vault: {vault_path(ctx, mode)}")
+    print(f"work vault: {ctx.vaults.get('work')}")
+    print(f"personal vault: {ctx.vaults.get('personal')}")
+    print(f"config: {ctx.source}")
+    print(f"config file: {config_path()}")
+    print(f"mode file: {ctx.mode_file}")
+    print(f"today: {today().isoformat()}")
+    print(f"week: {iso_week()}")
+
+
+def cmd_lint(ctx, args):
+    vaults = ["work", "personal"] if args.vault == "both" else [args.vault]
+    total_errs = 0
+    for mode in vaults:
+        vault = ctx.vaults.get(mode)
+        if vault is None or not vault.is_dir():
+            continue
+        if args.fix_safe:
+            for rel, desc in fix_safe(vault):
+                print(f"FIXED {mode}/{rel}: {desc}")
+        errs, warns = lint_vault(vault)
+        for rel, field, prob in errs:
+            print(f"{mode}/{rel}:{field}:{prob}")
+        for rel, field, prob in warns:
+            print(f"WARN {mode}/{rel}:{field}:{prob}")
+        total_errs += len(errs)
+    print(f"lint: {'clean' if total_errs == 0 else str(total_errs) + ' error(s)'}")
+    return 1 if total_errs else 0
+
+
+def cmd_doctor(ctx, args):
+    vaults = ["work", "personal"] if args.vault == "both" else [args.vault]
+    bad = 0
+    for mode in vaults:
+        vault = ctx.vaults.get(mode)
+        if vault is None or not vault.is_dir():
+            continue
+        errs, warns = lint_vault(vault)
+        orph = orphans(vault)
+        print(f"== {mode}: {len(errs)} lint error(s), {len(warns)} broken link(s), "
+              f"{len(orph)} orphan(s)")
+        for rel, field, prob in errs:
+            print(f"ERROR  {rel}:{field}:{prob}")
+        for rel, _, prob in warns:
+            print(f"BROKEN {rel}: {prob}")
+        for rel in orph:
+            print(f"ORPHAN {rel}")
+        bad += len(errs)
+    print(f"doctor: {'healthy' if bad == 0 else str(bad) + ' error(s)'}")
+    return 1 if bad else 0
+
+
+def main():
+    # Windows consoles default to a legacy code page; names like "Inés" must
+    # print and read the same on every OS.
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8")
+    args = build_parser().parse_args()
+    if args.cmd == "init":
+        return cmd_init(args)
+    ctx = resolve_ctx()
+
+    if args.cmd == "status":
+        return cmd_status(ctx)
+    if args.cmd == "mode":
+        if args.value:
+            if args.value == current_mode(ctx):
+                print(f"mode: {args.value} (already active, unchanged)")
+                return 0
+            set_mode(ctx, args.value, args.because)
+            print(f"mode: {args.value}")
+            print(f"switched because the user said: {args.because}")
+        else:
+            print(f"mode: {current_mode(ctx)}")
+        return 0
+    if args.cmd == "lint":
+        return cmd_lint(ctx, args)
+    if args.cmd == "doctor":
+        return cmd_doctor(ctx, args)
+    require_owner()
+
+    mode = current_mode(ctx)
+    if args.cmd == "capture":
+        fn = {"meeting": capture.cmd_capture_meeting,
+              "interview": capture.cmd_capture_interview,
+              "task": capture.cmd_capture_task,
+              "note": capture.cmd_capture_note,
+              "person": capture.cmd_capture_person,
+              "followup": capture.cmd_capture_followup}[args.what]
+        return fn(ctx, mode, args)
+    if args.cmd == "extract-tasks":
+        return capture.cmd_extract_tasks(ctx, mode, args)
+    if args.cmd == "promote":
+        return capture.cmd_promote(ctx, mode, args)
+    if args.cmd == "done":
+        return capture.cmd_done(ctx, mode, args)
+    if args.cmd == "query":
+        vault = vault_path(ctx, mode)
+        fn = {"tasks": query.cmd_tasks, "working-on": query.cmd_working_on,
+              "waiting-on": query.cmd_waiting_on, "today": query.cmd_today,
+              "person": query.cmd_person, "project": query.cmd_project,
+              "meetings": query.cmd_meetings}[args.what]
+        return fn(vault, args)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main() or 0)

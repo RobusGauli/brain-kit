@@ -1,0 +1,4 @@
+__pycache__/
+*.pyc
+.selftest-root/
+.DS_Store

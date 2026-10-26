@@ -1,0 +1,708 @@
+#!/bin/bash
+# second-brain self-test. Exits nonzero on any assertion failure.
+# All people, organizations, projects and topics below are invented.
+# Set KEEP=1 to keep the scratch vaults in .selftest-root/ for inspection.
+set -u
+REPO="$(cd "$(dirname "$0")/.." && pwd)"
+SKILL="$REPO/skills/second-brain"
+export BRAIN_ROOT="$REPO/.selftest-root"
+export BRAIN_OWNER="Maya Chen"
+export BRAIN_TODAY=2026-08-15
+export PYTHONDONTWRITEBYTECODE=1
+# Keep the user's real config and state out of the test.
+export XDG_CONFIG_HOME="$BRAIN_ROOT/xdg-config"
+export XDG_STATE_HOME="$BRAIN_ROOT/xdg-state"
+unset BRAIN_WORK_VAULT BRAIN_PERSONAL_VAULT BRAIN_STATE_DIR BRAIN_ORG_DOMAIN
+BRAIN="$SKILL/scripts/brain"
+FAILS=0
+PASSES=0
+
+cleanup() { [ "${KEEP:-0}" = 1 ] || rm -rf "$REPO/.selftest-root"; }
+trap cleanup EXIT
+
+fail() { echo "FAIL: $*"; FAILS=$((FAILS+1)); }
+ok()   { echo "ok:   $*"; PASSES=$((PASSES+1)); }
+
+assert_eq() { [ "$1" = "$2" ] && ok "$3" || fail "$3 (got '$1', want '$2')"; }
+assert_contains() { echo "$1" | grep -qF -- "$2" && ok "$3" || fail "$3 (missing '$2')"; }
+assert_file() { [ -f "$BRAIN_ROOT/$1" ] && ok "exists $1" || fail "missing file $1"; }
+assert_exit() { [ "$1" -eq "$2" ] && ok "$3" || fail "$3 (exit $1, want $2)"; }
+snapshot() { find "$1" -name '*.md' -exec cksum {} + | sort; }
+section() { awk -v h="## $2" '$0==h{f=1;next} /^#/{f=0} f' "$1"; }
+
+rm -rf "$REPO/.selftest-root"
+mkdir -p "$BRAIN_ROOT/work" "$BRAIN_ROOT/personal"
+
+# ---- status / mode ----------------------------------------------------------
+OUT=$("$BRAIN" status)
+assert_contains "$OUT" "second-brain " "status identifies the tool"
+assert_contains "$("$BRAIN" --version)" "second-brain" "--version prints the tool name"
+assert_contains "$OUT" "mode: work" "status default mode work"
+assert_contains "$OUT" "week: 2026-W33" "status week"
+assert_contains "$OUT" "owner: Maya Chen" "status shows the owner"
+"$BRAIN" mode personal --because "switch to my personal brain" >/dev/null
+assert_eq "$(cat "$BRAIN_ROOT/.brain-mode")" "personal" "mode file written"
+"$BRAIN" mode work --because "switch back to my work brain" >/dev/null
+
+# ---- capture meeting (full artifact set) -------------------------------------
+printf 'raw transcript line 1\nline 2\n' > "$BRAIN_ROOT/tr.txt"
+printf 'Reviewed the planting calendar.\n' > "$BRAIN_ROOT/sum.txt"
+OUT=$("$BRAIN" capture meeting --title "Garden Club Planning" --date 2026-08-14 \
+  --attendees "Sam Ortiz, Alex Moore" --project community-garden \
+  --transcript-file "$BRAIN_ROOT/tr.txt" --summary-file "$BRAIN_ROOT/sum.txt" \
+  --task "order seed packets|internal|high" --followup "Sam Ortiz|shed key copy")
+assert_exit $? 0 "capture meeting exit 0"
+for f in "work/Meetings/garden-club-planning-2026-08-14.md" \
+         "work/Transcripts/garden-club-planning-2026-08-14-transcript.md" \
+         "work/Tasks/internal-order-seed-packets.md" \
+         "work/Follow-ups/sam-shed-key-copy.md" \
+         "work/People/Sam-Ortiz.md" "work/People/Alex-Moore.md" \
+         "work/Daily/2026-08-14.md"; do assert_file "$f"; done
+assert_contains "$OUT" "WROTE work/Meetings/garden-club-planning-2026-08-14.md" "WROTE line printed"
+M=$(cat "$BRAIN_ROOT/work/Meetings/garden-club-planning-2026-08-14.md")
+assert_contains "$M" "[[Tasks/internal-order-seed-packets]]" "meeting links task"
+assert_contains "$M" "Reviewed the planting calendar." "summary landed in meeting"
+assert_contains "$(cat "$BRAIN_ROOT/work/Daily/2026-08-14.md")" \
+  "[[Meetings/garden-club-planning-2026-08-14]]" "daily links meeting"
+assert_contains "$(section "$BRAIN_ROOT/work/Daily/2026-08-14.md" "Waiting On")" \
+  "[[Follow-ups/sam-shed-key-copy]]" "meeting --followup lands in the daily Waiting On"
+grep -q "^org: internal" "$BRAIN_ROOT/work/People/Sam-Ortiz.md" \
+  && ok "work-vault attendee defaults to org internal" || fail "work default org"
+grep -q "^schema: 1" "$BRAIN_ROOT/work/Meetings/garden-club-planning-2026-08-14.md" \
+  && ok "notes carry schema: 1" || fail "schema version"
+
+# ---- idempotency: re-run identical capture -> byte-identical vault -----------
+SNAP1=$(snapshot "$BRAIN_ROOT/work")
+"$BRAIN" capture meeting --title "Garden Club Planning" --date 2026-08-14 \
+  --attendees "Sam Ortiz, Alex Moore" --project community-garden \
+  --transcript-file "$BRAIN_ROOT/tr.txt" --summary-file "$BRAIN_ROOT/sum.txt" \
+  --task "order seed packets|internal|high" --followup "Sam Ortiz|shed key copy" >/dev/null
+SNAP2=$(snapshot "$BRAIN_ROOT/work")
+assert_eq "$SNAP2" "$SNAP1" "re-run capture meeting: vault byte-identical"
+N=$(ls "$BRAIN_ROOT/work/Tasks" | wc -l | tr -d ' ')
+assert_eq "$N" "1" "no duplicate task on re-run"
+# a new attendee on a re-capture updates frontmatter AND the body line
+"$BRAIN" capture meeting --title "Garden Club Planning" --date 2026-08-14 \
+  --attendees "Sam Ortiz, Alex Moore, Lena Fox" >/dev/null
+MF="$BRAIN_ROOT/work/Meetings/garden-club-planning-2026-08-14.md"
+grep -q '^  - "\[\[People/Lena-Fox\]\]"' "$MF" && ok "new attendee in frontmatter" \
+  || fail "new attendee frontmatter"
+grep -q '^\*\*Attendees:\*\* \[\[People/Alex-Moore\]\], \[\[People/Lena-Fox\]\], \[\[People/Sam-Ortiz\]\]$' "$MF" \
+  && ok "body attendee line matches frontmatter" || fail "body attendee line stale"
+
+# ---- capture interview --------------------------------------------------------
+"$BRAIN" capture interview --candidate "Iris Bell" --role "Pastry Chef" \
+  --round technical --date 2026-08-15 >/dev/null
+assert_file "work/Interviews/iris-bell-pastry-chef-2026-08-15.md"
+assert_file "work/People/Iris-Bell.md"
+assert_contains "$(cat "$BRAIN_ROOT/work/Daily/2026-08-15.md")" \
+  "[[Interviews/iris-bell-pastry-chef-2026-08-15]]" "daily links interview"
+grep -q "verdict: pending" "$BRAIN_ROOT/work/Interviews/iris-bell-pastry-chef-2026-08-15.md" \
+  && ok "interview verdict pending" || fail "interview verdict"
+grep -q "^org: external" "$BRAIN_ROOT/work/People/Iris-Bell.md" \
+  && ok "candidate is org external" || fail "candidate org"
+
+# ---- capture task / promote / done --------------------------------------------
+"$BRAIN" capture task --desc "Write volunteer handbook" --area internal --priority high >/dev/null
+T="$BRAIN_ROOT/work/Tasks/internal-write-volunteer-handbook.md"
+assert_file "work/Tasks/internal-write-volunteer-handbook.md"
+grep -q "status: backlog" "$T" && ok "new task backlog" || fail "new task status"
+grep -q "priority: high" "$T" && ok "task priority" || fail "task priority"
+"$BRAIN" promote --task internal-write-volunteer-handbook >/dev/null
+grep -q "status: this-week" "$T" && ok "promote sets this-week" || fail "promote status"
+grep -q "week: 2026-W33" "$T" && ok "promote sets week" || fail "promote week"
+assert_contains "$(cat "$BRAIN_ROOT/work/Daily/2026-08-15.md")" \
+  "[[Tasks/internal-write-volunteer-handbook]]" "promote noted in daily"
+"$BRAIN" done --task internal-write-volunteer-handbook >/dev/null
+grep -q "status: done" "$T" && ok "done sets done" || fail "done status"
+
+# default priority medium
+"$BRAIN" capture task --desc "No priority given" --area admin >/dev/null
+grep -q "priority: medium" "$BRAIN_ROOT/work/Tasks/admin-no-priority-given.md" \
+  && ok "default priority medium" || fail "default priority"
+
+# ---- person / followup / note --------------------------------------------------
+"$BRAIN" capture person --name "Morgan Blake" --org external --email morgan@example.org >/dev/null
+assert_file "work/People/Morgan-Blake.md"
+"$BRAIN" capture followup --who "Morgan Blake" --about "library room booking" >/dev/null
+assert_file "work/Follow-ups/morgan-library-room-booking.md"
+printf 'Layer greens and browns; turn the pile weekly.\n' > "$BRAIN_ROOT/note.txt"
+"$BRAIN" capture note --title "compost bin guide" --body-file "$BRAIN_ROOT/note.txt" >/dev/null
+assert_file "work/Reference/compost-bin-guide.md"
+printf 'Why a slow ferment makes better bread.\n' > "$BRAIN_ROOT/blog.txt"
+"$BRAIN" capture note --title "Blog on sourdough" --folder Content --body-file "$BRAIN_ROOT/blog.txt" >/dev/null
+grep -q "status: draft" "$BRAIN_ROOT/work/Content/blog-sourdough.md" \
+  && ok "content draft default" || fail "content status"
+
+# ---- slug_key: filename slugs are stopword-stripped and length-capped, so two
+# ---- phrasings of the same request land on the SAME file.
+"$BRAIN" capture task --desc "repaint the north fence panels near the gate before Friday" --area client >/dev/null
+assert_file "work/Tasks/client-repaint-north-fence-panels.md"
+"$BRAIN" capture task --desc "Repaint north fence panels near gate by Friday 2026-08-21" --area client >/dev/null
+n=$(ls "$BRAIN_ROOT/work/Tasks" | grep -c "repaint-north-fence-panels")
+[ "$n" = "1" ] && ok "slug_key collapses phrasing variants" || fail "slug_key variants ($n files)"
+printf 'Practising washes from a library book; paper in the hall cupboard.\n' > "$BRAIN_ROOT/paint.txt"
+"$BRAIN" capture note --title "started learning watercolor" --body-file "$BRAIN_ROOT/paint.txt" >/dev/null
+assert_file "work/Reference/started-learning-watercolor.md"
+
+# ---- project inference and query tasks --project ----------------------------
+"$BRAIN" capture task --desc "ship widget" --area internal --project alpha >/dev/null
+mkproj() {
+  mkdir -p "$BRAIN_ROOT/work/Projects/$1"
+  printf -- '---\ntype: project\nschema: 1\ncreated: 2026-08-15\ntags: [project]\nstatus: active\narea: internal\n---\n\n# %s\n' \
+    "$2" > "$BRAIN_ROOT/work/Projects/$1/$1.md"
+}
+mkproj lumen-launch "Lumen Launch"
+mkproj harvest-fair-budget "Harvest Fair Budget"
+mkproj harvest-fair-schedule "Harvest Fair Schedule"
+"$BRAIN" capture task --desc "review the Lumen Launch press kit" --area internal >/dev/null
+grep -q "^project: lumen-launch" "$BRAIN_ROOT/work/Tasks/internal-review-lumen-launch-press.md" \
+  && ok "CLI infers project from desc" || fail "project inference"
+"$BRAIN" capture task --desc "renew the library card" --area admin >/dev/null
+grep -q "^project: null" "$BRAIN_ROOT/work/Tasks/admin-renew-library-card.md" \
+  && ok "no project when nothing overlaps" || fail "project inference false positive"
+"$BRAIN" capture meeting --title "Harvest Fair volunteer roster" --date 2026-08-15 >/dev/null
+grep -q "^project: null" "$BRAIN_ROOT/work/Meetings/harvest-fair-volunteer-roster-2026-08-15.md" \
+  && ok "tied project candidates -> null" || fail "project tie-break"
+
+"$BRAIN" query tasks --project alpha | grep -q "also mentioning" \
+  && ok "query tasks related section" || fail "query tasks related section"
+
+# ---- queries (one-shot answers) -------------------------------------------------
+OUT=$("$BRAIN" query tasks)
+assert_contains "$OUT" "internal-order-seed-packets" "query tasks lists task"
+OUT=$("$BRAIN" query tasks --status done)
+assert_contains "$OUT" "internal-write-volunteer-handbook" "query tasks --status done"
+OUT=$("$BRAIN" query waiting-on)
+assert_contains "$OUT" "morgan-library-room-booking" "query waiting-on"
+OUT=$("$BRAIN" query today)
+assert_contains "$OUT" "2026-08-15" "query today"
+OUT=$("$BRAIN" query person "Morgan Blake")
+assert_contains "$OUT" "morgan@example.org" "query person"
+assert_contains "$OUT" "role: —" "query person shows a dash for a missing role"
+echo "$OUT" | grep -q "None" && fail "query person printed None" || ok "query person never prints None"
+OUT=$("$BRAIN" query meetings --since 2026-08-01)
+assert_contains "$OUT" "garden-club-planning-2026-08-14" "query meetings"
+OUT=$("$BRAIN" query working-on)
+assert_contains "$OUT" "This-week tasks" "query working-on"
+
+# ---- lint failure refusal --------------------------------------------------------
+OUT=$("$BRAIN" capture meeting --title "Lint check" --date 2026-08-15 \
+  --task "sweep the porch|bogus-area" 2>&1)
+assert_exit $? 1 "invalid capture refused (exit 1)"
+assert_contains "$OUT" "REFUSED" "refusal message"
+[ -f "$BRAIN_ROOT/work/Meetings/lint-check-2026-08-15.md" ] && fail "refused file was written" \
+  || ok "refused file not written"
+for TITLE in "!!!" ""; do
+  OUT=$("$BRAIN" capture meeting --title "$TITLE" --date 2026-08-15 2>&1)
+  assert_exit $? 2 "meeting title with no letters refused: '$TITLE'"
+done
+[ -f "$BRAIN_ROOT/work/Meetings/-2026-08-15.md" ] && fail "empty-slug meeting written" \
+  || ok "no empty-slug meeting file"
+
+# ---- input validation: dates, empty slugs, person names -----------------------
+for CMD in "capture meeting --title Planning --date 2026-02-30" \
+           "capture meeting --title Planning --date 15/08/2026" \
+           "capture interview --candidate Pat --role Baker --round 1 --date 2026-13-01" \
+           "extract-tasks --task x --date tomorrow" \
+           "query meetings --since 2026-8-1" \
+           "promote --task internal-order-seed-packets --week 2026-W60"; do
+  OUT=$("$BRAIN" $CMD 2>&1)
+  assert_exit $? 2 "bad date refused: $CMD"
+  assert_contains "$OUT" "must be" "bad date message: $CMD"
+done
+for CMD in "capture task --desc !!! --area internal" \
+           "capture note --title @@@ --body-file $BRAIN_ROOT/note.txt" \
+           "capture followup --who Sam --about ..." \
+           "extract-tasks --title !!! --transcript-file $BRAIN_ROOT/tr.txt --task x"; do
+  OUT=$("$BRAIN" $CMD 2>&1)
+  assert_exit $? 2 "empty slug refused: $CMD"
+done
+ls "$BRAIN_ROOT/work/Tasks" | grep -q -- '-\.md$' && fail "empty-slug task written" \
+  || ok "no empty-slug task file"
+OUT=$("$BRAIN" capture person --name "李雷" 2>&1)
+assert_exit $? 2 "non-Latin person name refused"
+assert_contains "$OUT" "Latin letters" "non-Latin refusal explains the limit"
+[ -f "$BRAIN_ROOT/work/People/.md" ] && fail "People/.md written" || ok "no People/.md"
+"$BRAIN" capture person --name "anne-marie smith" >/dev/null
+
+# ---- quotes and backslashes in frontmatter values round-trip exactly ---------
+for i in 1 2 3; do
+  OUT=$("$BRAIN" capture followup --who "Morgan Blake" --about 'the "big" plan' 2>&1)
+  [ $i = 1 ] && S1=$(cksum < "$BRAIN_ROOT/work/Follow-ups/morgan-big-plan.md")
+done
+assert_contains "$OUT" "UNCHANGED work/Follow-ups/morgan-big-plan.md" "quoted --about rerun is UNCHANGED"
+assert_eq "$(cksum < "$BRAIN_ROOT/work/Follow-ups/morgan-big-plan.md")" "$S1" "quoted --about stays byte-identical"
+grep -qF 'about: "the \"big\" plan"' "$BRAIN_ROOT/work/Follow-ups/morgan-big-plan.md" \
+  && ok "quote escaped exactly once" || fail "quote escaping"
+for i in 1 2 3; do
+  OUT=$("$BRAIN" capture person --name "Hugo Vance" --role 'Head of "Ops"' 2>&1)
+  [ $i = 1 ] && S1=$(cksum < "$BRAIN_ROOT/work/People/Hugo-Vance.md")
+done
+assert_contains "$OUT" "UNCHANGED work/People/Hugo-Vance.md" "quoted --role rerun is UNCHANGED"
+assert_eq "$(cksum < "$BRAIN_ROOT/work/People/Hugo-Vance.md")" "$S1" "quoted --role stays byte-identical"
+for i in 1 2 3; do
+  OUT=$("$BRAIN" capture person --name "Wren Hart" --role 'Lead \ "Night" shift' 2>&1)
+done
+assert_contains "$OUT" "UNCHANGED work/People/Wren-Hart.md" "backslash value rerun is UNCHANGED"
+assert_contains "$("$BRAIN" query person "Wren Hart")" 'role: Lead \ "Night" shift' \
+  "backslash and quotes read back exactly"
+assert_file "work/People/Anne-Marie-Smith.md"
+
+# ---- lint + fix-safe ---------------------------------------------------------------
+"$BRAIN" lint >/dev/null; assert_exit $? 0 "lint clean exit 0"
+python3 - "$BRAIN_ROOT/work/Reference/compost-bin-guide.md" <<'EOF'
+import sys
+p = sys.argv[1]
+t = open(p).read().replace("schema: 1\n", "").replace("created: 2026-08-15\n", "")
+open(p, "w").write(t)
+EOF
+"$BRAIN" lint >/dev/null 2>&1; assert_exit $? 1 "lint detects broken file"
+OUT=$("$BRAIN" lint --fix-safe)
+assert_contains "$OUT" "FIXED" "fix-safe applied"
+"$BRAIN" lint >/dev/null; assert_exit $? 0 "lint clean after fix-safe"
+
+# ---- unreadable input files -> clean error, nothing written ----------------------
+OUT=$("$BRAIN" capture meeting --title "Ghost sync" --date 2026-08-13 \
+  --summary-file "$BRAIN_ROOT/sum.txt" --transcript-file /nope-does-not-exist.md 2>&1)
+assert_exit $? 2 "missing transcript-file exits 2"
+assert_contains "$OUT" "ERROR: cannot read" "clean error, no traceback"
+echo "$OUT" | grep -q "Traceback" && fail "raw traceback leaked" || ok "no traceback"
+[ -f "$BRAIN_ROOT/work/Meetings/ghost-sync-2026-08-13.md" ] \
+  && fail "ghost meeting written" || ok "nothing written on bad file"
+
+# ---- unicode transliteration ----------------------------------------------------
+"$BRAIN" capture person --name "Inés Peña" --org external >/dev/null
+assert_file "work/People/Ines-Pena.md"
+"$BRAIN" capture meeting --title "Crème brûlée tasting" --date 2026-08-13 >/dev/null
+assert_file "work/Meetings/creme-brulee-tasting-2026-08-13.md"
+
+# ---- write path reuses fuzzy person resolution -----------------------------------
+"$BRAIN" capture person --name "Noor" >/dev/null   # first-name-only note exists
+OUT=$("$BRAIN" capture meeting --title "Seed swap huddle" --date 2026-08-12 \
+  --attendees "Noor Haddad")
+[ -f "$BRAIN_ROOT/work/People/Noor-Haddad.md" ] \
+  && fail "duplicate Noor-Haddad.md created" || ok "no duplicate person note"
+assert_contains "$OUT" "LINKED work/People/Noor.md" "LINKED line printed"
+grep -q '\[\[People/Noor\]\]' "$BRAIN_ROOT/work/Meetings/seed-swap-huddle-2026-08-12.md" \
+  && ok "attendee links existing People/Noor" || fail "attendee wikilink wrong"
+
+# two FULL names with different surnames are DIFFERENT people
+"$BRAIN" capture person --name "Elena Park" >/dev/null
+"$BRAIN" capture person --name "Elena Novak" >/dev/null
+assert_file "work/People/Elena-Novak.md"
+assert_file "work/People/Elena-Park.md"
+
+# ---- follow-up dedupe + reopen ---------------------------------------------------
+OUT=$("$BRAIN" capture followup --who "Sam Ortiz" --about "Spare Shed Key Copy" 2>&1)
+assert_contains "$OUT" "UNCHANGED work/Follow-ups/sam-shed-key-copy.md" \
+  "paraphrase dedupes to existing follow-up"
+N=$(ls "$BRAIN_ROOT/work/Follow-ups" | grep -c '^sam-shed')
+assert_eq "$N" "1" "no forked follow-up"
+FU="$BRAIN_ROOT/work/Follow-ups/sam-shed-key-copy.md"
+python3 - "$FU" <<'EOF'
+import sys
+p = sys.argv[1]
+t = open(p).read().replace("status: waiting", "status: done")
+open(p, "w").write(t)
+EOF
+OUT=$("$BRAIN" capture followup --who "Sam Ortiz" --about "shed key copy")
+assert_contains "$OUT" "UPDATED work/Follow-ups/sam-shed-key-copy.md" \
+  "done follow-up reopened (UPDATED)"
+grep -q "status: waiting" "$FU" && ok "reopened -> waiting" || fail "reopen status"
+grep -q "opened: 2026-08-15" "$FU" && ok "reopen refreshes opened date" || fail "reopen opened date"
+
+# ---- query project / capture task --this-week / extract-tasks ---------------------
+"$BRAIN" capture task --desc "Review Lumen pricing page" --area internal --this-week >/dev/null
+grep -q "status: this-week" "$BRAIN_ROOT/work/Tasks/internal-review-lumen-pricing-page.md" \
+  && ok "capture task --this-week" || fail "capture task --this-week"
+assert_contains "$(cat "$BRAIN_ROOT/work/Daily/2026-08-15.md")" \
+  "[[Tasks/internal-review-lumen-pricing-page]]" "this-week task in daily priorities"
+printf 'action items...\n' > "$BRAIN_ROOT/tx.txt"
+"$BRAIN" extract-tasks --title "Potluck planning" --date 2026-08-13 \
+  --transcript-file "$BRAIN_ROOT/tx.txt" \
+  --task "book the community hall|internal|high" --task "email Rosa about tables|client|" >/dev/null
+assert_file "work/Transcripts/potluck-planning-2026-08-13-transcript.md"
+assert_file "work/Tasks/internal-book-community-hall.md"
+grep -q 'source: "\[\[Transcripts/potluck-planning-2026-08-13-transcript\]\]"' \
+  "$BRAIN_ROOT/work/Tasks/internal-book-community-hall.md" \
+  && ok "extract-tasks source = transcript" || fail "extract-tasks source"
+OUT=$("$BRAIN" query project "lumen")
+assert_contains "$OUT" "Lumen Launch" "query project answers"
+
+# ---- personal vault mode ------------------------------------------------------------
+"$BRAIN" mode personal --because "in my personal brain, ..." >/dev/null
+"$BRAIN" capture task --desc "Read pruning guide" --area learning >/dev/null
+assert_file "personal/Tasks/learning-read-pruning-guide.md"
+"$BRAIN" capture person --name "Cara Diaz" >/dev/null
+grep -q "^org: external" "$BRAIN_ROOT/personal/People/Cara-Diaz.md" \
+  && ok "personal-vault person defaults to org external" || fail "personal default org"
+"$BRAIN" mode work --because "back to my work brain" >/dev/null
+
+# ---- frontmatter policy: tags on every note, no frontmatter title -----------
+for f in "work/Tasks/internal-order-seed-packets.md" "work/Daily/2026-08-15.md" \
+         "work/Reference/compost-bin-guide.md" "work/People/Morgan-Blake.md" \
+         "work/Follow-ups/morgan-library-room-booking.md"; do
+  grep -q "^tags:" "$BRAIN_ROOT/$f" && ok "tags on $f" || fail "tags missing on $f"
+  grep -q "^title:" "$BRAIN_ROOT/$f" && fail "frontmatter title on $f (H1 is the title)" \
+    || ok "no frontmatter title on $f"
+  grep -q "^# " "$BRAIN_ROOT/$f" && ok "H1 on $f" || fail "no H1 on $f"
+done
+python3 - "$BRAIN_ROOT/work/Reference/compost-bin-guide.md" <<'EOF'
+import sys
+p = sys.argv[1]
+t = open(p).read().replace("tags:", "title: Some Prose Title\ntags:", 1)
+open(p, "w").write(t)
+EOF
+"$BRAIN" lint >/dev/null 2>&1; assert_exit $? 1 "lint rejects a frontmatter title"
+"$BRAIN" lint --fix-safe >/dev/null
+"$BRAIN" lint >/dev/null; assert_exit $? 0 "fix-safe removes the frontmatter title"
+
+# capture note refuses to write a title-only note
+OUT=$("$BRAIN" capture note --title "Title only note" 2>&1)
+assert_exit $? 2 "capture note without --body-file refused"
+: > "$BRAIN_ROOT/blank.txt"
+OUT2=$("$BRAIN" capture note --title "Blank body note" --body-file "$BRAIN_ROOT/blank.txt" 2>&1)
+assert_exit $? 2 "capture note with an EMPTY --body-file refused"
+assert_contains "$OUT2" "is empty" "empty-body refusal explains itself"
+[ -f "$BRAIN_ROOT/work/Reference/blank-body-note.md" ] && fail "blank note written" \
+  || ok "no blank note written"
+assert_contains "$OUT" "requires --body-file" "body-file requirement explained"
+[ -f "$BRAIN_ROOT/work/Reference/title-only-note.md" ] && fail "title-only note written" \
+  || ok "no title-only note written"
+grep -q "  - task" "$BRAIN_ROOT/work/Tasks/internal-order-seed-packets.md" \
+  && ok "tags carries the note type" || fail "tags type value"
+
+# ---- task owner: required, defaults to the vault owner, can be someone else ----
+grep -q 'owner: "\[\[People/Maya-Chen\]\]"' "$BRAIN_ROOT/work/Tasks/internal-order-seed-packets.md" \
+  && ok "meeting task defaults to the vault owner" || fail "default owner"
+assert_file "work/People/Maya-Chen.md"
+"$BRAIN" capture task --desc "bring the folding tables" --area internal \
+  --owner "Jordan Hale" >/dev/null
+PT="$BRAIN_ROOT/work/Tasks/internal-bring-folding-tables.md"
+grep -q 'owner: "\[\[People/Jordan-Hale\]\]"' "$PT" \
+  && ok "--owner files the task under someone else" || fail "--owner"
+assert_file "work/People/Jordan-Hale.md"
+grep -q "^\*\*Owner:\*\* \[\[People/Jordan-Hale\]\]" "$PT" \
+  && ok "task body shows owner" || fail "task body owner line"
+grep -q "^\*\*Source:\*\*" "$BRAIN_ROOT/work/Tasks/internal-order-seed-packets.md" \
+  && ok "task body carries a source line, not a title repeat" || fail "task source line"
+N=$(grep -c "order seed packets" "$BRAIN_ROOT/work/Tasks/internal-order-seed-packets.md")
+assert_eq "$N" "1" "task body does not repeat the title as prose (H1 only)"
+
+# owner-scoped queries: other people's action items stay out of the backlog
+OUT=$("$BRAIN" query tasks)
+echo "$OUT" | grep -q "internal-bring-folding-tables" \
+  && fail "someone else's task leaked into the backlog" || ok "backlog is owner-scoped"
+OUT=$("$BRAIN" query tasks --owner all)
+assert_contains "$OUT" "internal-bring-folding-tables" "--owner all shows everything"
+OUT=$("$BRAIN" query waiting-on)
+assert_contains "$OUT" "Action items owed by others" "waiting-on has an owed-by-others section"
+assert_contains "$OUT" "internal-bring-folding-tables" "waiting-on lists the owed item"
+OUT=$("$BRAIN" promote --task internal-bring-folding-tables 2>&1)
+assert_exit $? 2 "promoting someone else's task is refused"
+assert_contains "$OUT" "owned by" "refusal names the owner"
+
+# ---- a note built from a source must carry prose ----------------------------
+OUT=$("$BRAIN" capture meeting --title "Empty sync" --date 2026-08-11 \
+  --transcript-file "$BRAIN_ROOT/tr.txt" 2>&1)
+assert_exit $? 2 "--transcript-file without --summary-file refused"
+assert_contains "$OUT" "requires --summary-file" "summary requirement explained"
+[ -f "$BRAIN_ROOT/work/Meetings/empty-sync-2026-08-11.md" ] \
+  && fail "summary-less meeting written" || ok "nothing written when the summary is missing"
+OUT=$("$BRAIN" capture interview --candidate "Pat Quinn" --role "Pastry Chef" \
+  --round 2 --date 2026-08-11 --transcript-file "$BRAIN_ROOT/tr.txt" 2>&1)
+assert_exit $? 2 "interview --transcript-file without assessment refused"
+assert_contains "$OUT" "--assessment-file" "assessment requirement explained"
+
+# repeatable --decision lands under ## Decisions
+printf 'Raised 420 dollars across two tables.\n' > "$BRAIN_ROOT/sum2.txt"
+"$BRAIN" capture meeting --title "Bake sale review" --date 2026-08-11 \
+  --transcript-file "$BRAIN_ROOT/tr.txt" --summary-file "$BRAIN_ROOT/sum2.txt" \
+  --decision "Use reusable cups from now on" \
+  --decision "Next sale on the first Saturday of October" >/dev/null
+M=$(cat "$BRAIN_ROOT/work/Meetings/bake-sale-review-2026-08-11.md")
+assert_contains "$M" "## Decisions" "## Decisions section written"
+assert_contains "$M" "- Use reusable cups from now on" "decision 1 present"
+assert_contains "$M" "- Next sale on the first Saturday of October" "decision 2 present"
+assert_contains "$M" "Raised 420 dollars across two tables." "summary present"
+echo "$M" | grep -q "^## Links$" && fail "empty ## Links section kept" \
+  || ok "empty template sections omitted"
+
+# interview: --note / --assessment-file / --verdict
+printf 'Calm under pressure; invite back for a trial shift.\n' > "$BRAIN_ROOT/assess.txt"
+"$BRAIN" capture interview --candidate "Elena Novak" --role "Pastry Chef" \
+  --round 2 --date 2026-08-11 --transcript-file "$BRAIN_ROOT/tr.txt" \
+  --note "Plated a three-course tasting menu" \
+  --note "Slow on laminated dough" \
+  --assessment-file "$BRAIN_ROOT/assess.txt" --verdict hire >/dev/null
+I=$(cat "$BRAIN_ROOT/work/Interviews/elena-novak-pastry-chef-2026-08-11.md")
+assert_contains "$I" "verdict: hire" "verdict set from an explicit recommendation"
+assert_contains "$I" "## Assessment" "## Assessment section written"
+assert_contains "$I" "invite back for a trial shift" "assessment prose present"
+assert_contains "$I" "- Slow on laminated dough" "--note bullets present"
+
+# ---- daily notes: full template body, never empty ----------------------------
+rm -f "$BRAIN_ROOT/work/Daily/2026-08-10.md"
+"$BRAIN" extract-tasks --title "Potluck notes" --date 2026-08-10 \
+  --transcript-file "$BRAIN_ROOT/tx.txt" --task "confirm the dessert list" >/dev/null
+D=$(cat "$BRAIN_ROOT/work/Daily/2026-08-10.md")
+assert_contains "$D" "## Brain Dump" "extract-tasks daily has the template body"
+assert_contains "$D" "[[Tasks/internal-confirm-dessert-list]]" "extract-tasks daily links its task"
+assert_contains "$D" "## Waiting On" "daily has a Waiting On section"
+
+# project inference is identical on the meeting path and the extract-tasks path
+"$BRAIN" extract-tasks --title "Lumen Launch sync" --date 2026-08-10 \
+  --task "draft the Lumen summary" >/dev/null
+grep -q "^project: lumen-launch" "$BRAIN_ROOT/work/Tasks/internal-draft-lumen-summary.md" \
+  && ok "extract-tasks infers project from --title like capture meeting" \
+  || fail "extract-tasks project inference"
+
+# ---- two-vault env resolution (no common parent required) ---------------------
+TWO="$BRAIN_ROOT/two"
+rm -rf "$TWO"; mkdir -p "$TWO/a/vault-work" "$TWO/b/some other place/vault-personal" "$TWO/state"
+twoenv() {
+  env -u BRAIN_ROOT BRAIN_WORK_VAULT="$TWO/a/vault-work" \
+    BRAIN_PERSONAL_VAULT="$TWO/b/some other place/vault-personal" \
+    BRAIN_STATE_DIR="$TWO/state" "$BRAIN" "$@"
+}
+OUT=$(twoenv status 2>&1)
+assert_exit $? 0 "two-vault env resolves with no common parent"
+assert_contains "$OUT" "$TWO/a/vault-work" "work vault path reported"
+assert_contains "$OUT" "vault-personal" "personal vault path reported"
+assert_contains "$OUT" "config: BRAIN_WORK_VAULT+BRAIN_PERSONAL_VAULT" "config source reported"
+twoenv mode personal --because "use my personal vault" >/dev/null
+assert_eq "$(cat "$TWO/state/.brain-mode")" "personal" "mode file honours BRAIN_STATE_DIR"
+twoenv capture task --desc "two vault write" --area internal >/dev/null 2>&1
+assert_file "two/b/some other place/vault-personal/Tasks/internal-two-vault-write.md"
+OUT=$(env -u BRAIN_ROOT BRAIN_WORK_VAULT="$TWO/nope-a" \
+  BRAIN_PERSONAL_VAULT="$TWO/nope-b" "$BRAIN" status 2>&1)
+assert_exit $? 2 "no existing vault directory -> clean error"
+assert_contains "$OUT" "brain init" "missing-vault error points to brain init"
+OUT=$(env -u BRAIN_ROOT "$BRAIN" status 2>&1)
+assert_exit $? 2 "no vault configured at all -> clean error"
+assert_contains "$OUT" "brain init" "unconfigured error points to brain init"
+assert_contains "$OUT" "BRAIN_WORK_VAULT" "unconfigured error names the env vars"
+OUT=$(env -u BRAIN_OWNER "$BRAIN" capture task --desc "x" --area internal 2>&1)
+assert_exit $? 2 "write without an owner refused"
+assert_contains "$OUT" "brain init --owner" "missing-owner error points to brain init"
+
+# ---- captured prose lands INSIDE the wrapper section --------------------------
+printf '## Why it matters\nPeople came back when we labelled every packet.\n\n## What changed\nWe sorted seeds by season first.\n' > "$BRAIN_ROOT/draft.md"
+"$BRAIN" capture note --title "lessons from our first seed swap" --folder Content \
+  --body-file "$BRAIN_ROOT/draft.md" >/dev/null
+C=$(cat "$BRAIN_ROOT/work/Content/lessons-first-seed-swap.md")
+assert_contains "$C" "## Draft" "content note keeps its wrapper section"
+assert_contains "$C" "**Why it matters**" "body headings flattened to bold leads"
+echo "$C" | awk '/^## Draft/{f=1;next} /^#/{f=0} f' | grep -q "People came back" \
+  && ok "prose sits inside ## Draft" || fail "prose escaped the wrapper section"
+echo "$C" | grep -q "^## Why it matters" && fail "body heading still closes the wrapper" \
+  || ok "no competing ## heading in the body"
+
+# ---- the mode gate: no implicit switch, ever --------------------------------
+"$BRAIN" mode work --because "back to my work brain" >/dev/null 2>&1
+OUT=$("$BRAIN" mode personal 2>&1)
+assert_exit $? 2 "mode switch without --because refused"
+assert_contains "$OUT" "requires --because" "refusal explains the requirement"
+assert_eq "$("$BRAIN" mode)" "mode: work" "mode unchanged after refusal"
+# a --because that does not name the target vault is not an explicit request
+OUT=$("$BRAIN" mode personal --because "get a blog draft started in my brain" 2>&1)
+assert_exit $? 2 "--because that never names the personal vault is refused"
+assert_eq "$("$BRAIN" mode)" "mode: work" "mode unchanged after a self-justified switch"
+OUT=$("$BRAIN" mode personal --because "this feels like a personal topic" 2>&1)
+assert_exit $? 2 "topic-flavoured justification refused"
+# a quote whose only mention of the target vault is negated is refused
+for Q in "put this in my work brain, not my personal one" \
+         "not my personal brain" \
+         "never in my personal vault"; do
+  OUT=$("$BRAIN" mode personal --because "$Q" 2>&1)
+  assert_exit $? 2 "negated quote refused: $Q"
+  assert_eq "$("$BRAIN" mode)" "mode: work" "mode unchanged: $Q"
+done
+"$BRAIN" mode personal --because "switch to my personal brain" >/dev/null 2>&1
+"$BRAIN" mode work --because "put this in my work brain, not my personal one" >/dev/null 2>&1
+assert_eq "$("$BRAIN" mode)" "mode: work" "negated other vault does not block the target"
+"$BRAIN" mode personal --because "switch to personal, I'm done with my work for today" >/dev/null 2>&1
+assert_eq "$("$BRAIN" mode)" "mode: personal" "mentioning the other vault does not block the target"
+"$BRAIN" mode work --because "back to my work brain" >/dev/null 2>&1
+for Q in "switch to my personal brain" "in my personal brain, add a note" \
+         "put this in my personal vault" "switch to personal"; do
+  "$BRAIN" mode work --because "back to my work brain" >/dev/null 2>&1
+  "$BRAIN" mode personal --because "$Q" >/dev/null 2>&1
+  assert_eq "$("$BRAIN" mode)" "mode: personal" "explicit switch works: $Q"
+done
+for Q in "switch back to my work brain" "in my work brain" "switch to work"; do
+  "$BRAIN" mode personal --because "switch to my personal brain" >/dev/null 2>&1
+  "$BRAIN" mode work --because "$Q" >/dev/null 2>&1
+  assert_eq "$("$BRAIN" mode)" "mode: work" "explicit switch back works: $Q"
+done
+OUT=$("$BRAIN" mode work 2>&1)
+assert_exit $? 0 "re-asserting the active mode is a no-op"
+assert_contains "$OUT" "already active" "no-op is announced"
+
+# ---- single-token names never fork a person ---------------------------------
+"$BRAIN" capture person --name "Taylor Brooks" --org internal >/dev/null
+OUT=$("$BRAIN" capture followup --who "Taylor" --about "raffle prize list" 2>&1)
+assert_exit $? 0 "single-token --who resolves to the existing full-name note"
+[ -f "$BRAIN_ROOT/work/People/Taylor.md" ] && fail "single-name People/Taylor.md forked" \
+  || ok "no forked single-name person note"
+grep -q 'who: "\[\[People/Taylor-Brooks\]\]"' \
+  "$BRAIN_ROOT/work/Follow-ups/taylor-raffle-prize-list.md" \
+  && ok "follow-up links the existing person" || fail "follow-up who wikilink"
+"$BRAIN" capture person --name "Taylor Reed" --org internal >/dev/null
+OUT=$("$BRAIN" capture task --desc "update the gate code" --area internal \
+  --owner "Taylor" 2>&1)
+assert_exit $? 2 "ambiguous single-token name refused"
+assert_contains "$OUT" "People/Taylor-Brooks" "refusal lists candidate 1"
+assert_contains "$OUT" "People/Taylor-Reed" "refusal lists candidate 2"
+assert_contains "$OUT" "Nothing was written" "ambiguous refusal writes nothing"
+[ -f "$BRAIN_ROOT/work/Tasks/internal-update-gate-code.md" ] \
+  && fail "task written despite ambiguous owner" || ok "nothing written on ambiguity"
+"$BRAIN" capture task --desc "update the gate code" --area internal \
+  --owner "Taylor Reed" >/dev/null
+grep -q 'owner: "\[\[People/Taylor-Reed\]\]"' \
+  "$BRAIN_ROOT/work/Tasks/internal-update-gate-code.md" \
+  && ok "full name disambiguates" || fail "full-name owner"
+"$BRAIN" lint >/dev/null; assert_exit $? 0 "vault lints after the person guards"
+
+# ---- doctor -------------------------------------------------------------------
+OUT=$("$BRAIN" doctor --vault work)
+assert_exit $? 0 "doctor exit 0 on clean vault"
+assert_contains "$OUT" "doctor: healthy" "doctor reports healthy"
+printf -- '---\ntype: reference\nschema: 1\ncreated: 2026-08-15\ntags: [reference]\n---\n# Lonely\n\nSee [[Nowhere-Note]].\n' \
+  > "$BRAIN_ROOT/work/Reference/lonely.md"
+OUT=$("$BRAIN" doctor --vault work)
+assert_contains "$OUT" "ORPHAN Reference/lonely.md" "doctor flags orphan"
+assert_contains "$OUT" "BROKEN Reference/lonely.md" "doctor flags broken link"
+rm "$BRAIN_ROOT/work/Reference/lonely.md"
+
+# ---- brain init + config file + org domain ------------------------------------
+# Runs with no vault/owner env at all, so everything comes from the config file.
+CFGHOME="$BRAIN_ROOT/init-config"
+STATEHOME="$BRAIN_ROOT/init-state"
+IV="$(cd "$BRAIN_ROOT" && pwd -P)/init-vaults"  # init stores resolved paths
+CFG="$CFGHOME/second-brain/config"
+cb() {
+  env -u BRAIN_ROOT -u BRAIN_OWNER -u BRAIN_WORK_VAULT -u BRAIN_PERSONAL_VAULT \
+    -u BRAIN_STATE_DIR -u BRAIN_ORG_DOMAIN \
+    XDG_CONFIG_HOME="$CFGHOME" XDG_STATE_HOME="$STATEHOME" "$BRAIN" "$@"
+}
+OUT=$(cb init 2>&1)
+assert_exit $? 2 "init with no vault refused"
+OUT=$(cb init --work-vault "$IV/work" --personal-vault "$IV/personal" \
+  --owner "Maya Chen" --org-domain example.com 2>&1)
+assert_exit $? 0 "init exit 0"
+[ -f "$CFG" ] && ok "init writes the config file" || fail "config file missing"
+C=$(cat "$CFG")
+assert_contains "$C" "BRAIN_WORK_VAULT=$IV/work" "config has the work vault"
+assert_contains "$C" "BRAIN_PERSONAL_VAULT=$IV/personal" "config has the personal vault"
+assert_contains "$C" "BRAIN_OWNER=Maya Chen" "config has the owner"
+assert_contains "$C" "BRAIN_ORG_DOMAIN=example.com" "config has the org domain"
+for d in Daily Meetings Transcripts Interviews Projects People Tasks Follow-ups \
+         Content Reference _templates; do
+  [ -d "$IV/work/$d" ] && [ -d "$IV/personal/$d" ] && ok "init created $d/ in both vaults" \
+    || fail "init missing $d/"
+done
+for f in README.md Tasks.base _templates/Task.md _templates/Person.md; do
+  [ -f "$IV/work/$f" ] && ok "init wrote work/$f" || fail "init missing work/$f"
+done
+grep -q '\[\[People/Maya-Chen\]\]' "$IV/work/Tasks.base" \
+  && ok "Tasks.base carries the owner link" || fail "Tasks.base owner"
+grep -q "^org: internal" "$IV/work/_templates/Person.md" \
+  && ok "work Person template defaults to internal" || fail "work Person template org"
+grep -q "^org: external" "$IV/personal/_templates/Person.md" \
+  && ok "personal Person template defaults to external" || fail "personal Person template org"
+grep -q "^schema: 1" "$IV/work/_templates/Task.md" \
+  && ok "templates carry schema: 1" || fail "template schema"
+OUT=$(cb status)
+assert_exit $? 0 "status works from the config file alone"
+assert_contains "$OUT" "owner: Maya Chen" "owner read from config file"
+assert_contains "$OUT" "org domain: example.com" "org domain read from config file"
+assert_contains "$OUT" "($CFG)" "status names the config file as the source"
+cb lint >/dev/null; assert_exit $? 0 "freshly initialised vaults lint clean"
+
+# org domain: emails at the domain are internal, others external
+cb capture person --name "Ana Ruiz" --email ana@example.com >/dev/null
+grep -q "^org: internal" "$IV/work/People/Ana-Ruiz.md" \
+  && ok "email at BRAIN_ORG_DOMAIN -> internal" || fail "org domain internal"
+cb capture person --name "Ben Cole" --email ben@example.org >/dev/null
+grep -q "^org: external" "$IV/work/People/Ben-Cole.md" \
+  && ok "email at another domain -> external" || fail "org domain external"
+cb mode personal --because "switch to my personal brain" >/dev/null
+[ -f "$STATEHOME/second-brain/.brain-mode" ] && ok "mode file lives in XDG_STATE_HOME" \
+  || fail "mode file location"
+cb capture person --name "Dev Shah" --email dev@example.com >/dev/null
+grep -q "^org: internal" "$IV/personal/People/Dev-Shah.md" \
+  && ok "org domain applies in the personal vault too" || fail "personal org domain"
+cb mode work --because "back to my work brain" >/dev/null
+
+# env overrides the file
+OUT=$(env -u BRAIN_ROOT XDG_CONFIG_HOME="$CFGHOME" XDG_STATE_HOME="$STATEHOME" \
+  BRAIN_OWNER="Sam Ortiz" "$BRAIN" status)
+assert_contains "$OUT" "owner: Sam Ortiz" "BRAIN_OWNER env overrides the config file"
+
+# init without an owner leaves a placeholder; a later init with an owner
+# fills it in, but never touches a file the user edited
+PV="$(cd "$BRAIN_ROOT" && pwd -P)/ph-vaults"
+PH="$BRAIN_ROOT/ph-config"
+ph() {
+  env -u BRAIN_ROOT -u BRAIN_OWNER -u BRAIN_WORK_VAULT -u BRAIN_PERSONAL_VAULT \
+    -u BRAIN_STATE_DIR XDG_CONFIG_HOME="$PH" XDG_STATE_HOME="$STATEHOME" "$BRAIN" "$@"
+}
+OUT=$(ph init --work-vault "$PV/work" 2>&1)
+assert_contains "$OUT" "no usable owner" "init without owner warns"
+grep -qF '[[People/OWNER]]' "$PV/work/Tasks.base" && ok "placeholder before owner is known" \
+  || fail "placeholder missing"
+echo "# my edit" >> "$PV/work/_templates/Follow-up.md"
+ph init --owner "Maya Chen" >/dev/null
+for f in Tasks.base _templates/Task.md README.md; do
+  grep -qF '[[People/OWNER]]' "$PV/work/$f" && fail "placeholder left in $f" \
+    || ok "owner filled into $f"
+done
+grep -qF '[[People/Maya-Chen]]' "$PV/work/Tasks.base" && ok "Tasks.base has the owner link" \
+  || fail "Tasks.base owner link"
+grep -qF '[[People/OWNER]]' "$PV/work/_templates/Follow-up.md" \
+  && ok "user-edited file left untouched" || fail "edited file was rewritten"
+
+# a non-Latin owner is refused before anything is written, and a bad value
+# already in the config never blocks --help, status or init
+NL="$BRAIN_ROOT/nl-config"
+nl() {
+  env -u BRAIN_ROOT -u BRAIN_OWNER -u BRAIN_WORK_VAULT -u BRAIN_PERSONAL_VAULT \
+    -u BRAIN_STATE_DIR XDG_CONFIG_HOME="$NL" XDG_STATE_HOME="$STATEHOME" "$BRAIN" "$@"
+}
+OUT=$(nl init --work-vault "$PV/work" --owner "李雷" 2>&1)
+assert_exit $? 2 "init --owner with no Latin letters refused"
+assert_contains "$OUT" "Nothing was written" "non-Latin owner refusal writes nothing"
+[ -f "$NL/second-brain/config" ] && fail "config written despite bad owner" \
+  || ok "no config written for a bad owner"
+mkdir -p "$NL/second-brain"
+printf 'BRAIN_WORK_VAULT=%s\nBRAIN_OWNER=李雷\n' "$PV/work" > "$NL/second-brain/config"
+nl --help >/dev/null 2>&1; assert_exit $? 0 "--help works with a bad owner in config"
+OUT=$(nl status 2>&1)
+assert_exit $? 0 "status works with a bad owner in config"
+assert_contains "$OUT" "INVALID" "status flags the bad owner"
+OUT=$(nl capture task --desc "water the ferns" --area internal 2>&1)
+assert_exit $? 2 "writes refused with a bad owner"
+assert_contains "$OUT" "brain init --owner" "bad-owner error points to brain init"
+nl init --owner "Maya Chen" >/dev/null 2>&1; assert_exit $? 0 "init can overwrite a bad owner"
+assert_contains "$(nl status)" "owner: Maya Chen" "owner fixed by init"
+
+# re-running init merges into the config and never overwrites vault files
+echo "my own notes" >> "$IV/work/README.md"
+OUT=$(cb init --org-domain example.net 2>&1)
+assert_exit $? 0 "re-run init exit 0"
+C=$(cat "$CFG")
+assert_contains "$C" "BRAIN_WORK_VAULT=$IV/work" "re-run init keeps the vault paths"
+assert_contains "$C" "BRAIN_ORG_DOMAIN=example.net" "re-run init updates the given key"
+grep -q "my own notes" "$IV/work/README.md" \
+  && ok "re-run init leaves existing files alone" || fail "init overwrote README"
+
+echo
+if [ "$FAILS" -eq 0 ]; then
+  echo "SELFTEST PASS ($PASSES assertions)"
+  exit 0
+else
+  echo "SELFTEST FAIL ($FAILS failures, $PASSES passed)"
+  exit 1
+fi
