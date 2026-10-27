@@ -2,7 +2,7 @@
 name: second-brain
 description: The user's second brain — two Obsidian vaults (work and personal) where everything the user asks to save is kept. Use for every "remember X", "note down / jot down / save / log / capture / write up X", "we decided X", "add a task", "remind me to X", "I'm waiting on X", "what am I working on", "what's on my plate", "who is X", and anything about notes, daily notes, meetings, interviews, transcripts, tasks, projects, people or follow-ups. Also use to set up or update brain-kit.
 metadata:
-  version: "1.1.0"
+  version: "1.1.1"
 ---
 
 # Second Brain
