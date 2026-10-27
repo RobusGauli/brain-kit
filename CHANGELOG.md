@@ -4,15 +4,55 @@ All notable changes to brain-kit. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [1.2.0] - 2026-10-27
+
+The CLI now captures, edits and reads every kind of note, so nothing has to
+be edited by hand.
+
+### Added
+- `brain capture project --name NAME [--area A] [--context-file F]` creates an
+  active project note. Tasks and meetings infer the new project from their
+  titles. Re-running with the same name changes nothing.
+- `brain set <type> REF …` changes fields and status of an existing note:
+  task (status, priority, area, owner, project, desc, week), follow-up
+  (status, about), project (status, area), person (org, role, email),
+  interview (verdict, round), content (status) and meeting (project,
+  attendees). It rewrites the body lines that mirror a field, so the note and
+  its frontmatter never disagree. Closing a follow-up, pausing a project and
+  publishing a draft were impossible before.
+- `brain append <type> REF …` adds prose to the one section each type
+  designates (Reference/Content text, person notes, follow-up updates, project
+  context and milestones, meeting decisions, interview notes, task notes, and
+  the daily Work Log / Brain Dump). It never replaces text, and repeating a
+  command changes nothing.
+- `brain query show FOLDER/STEM` prints any one note in full, including past
+  daily notes. New listings: `query projects`, `followups`, `interviews`,
+  `people`, `dailies`, `transcripts` and `search WORDS`. `query tasks`,
+  `meetings` and `notes` gained filters.
+- `lint` warns when a task or meeting names a project that has no note, and
+  when a body line (`**Owner:**`, `**Role:**`, …) disagrees with its
+  frontmatter. `lint --fix-safe` repairs the second kind.
 
 ### Fixed
+- Re-running `capture project` or `capture note` on an existing note printed
+  nothing and silently dropped the new text. It now prints `UNCHANGED` plus a
+  `NOTE:` on stderr that names the `set` or `append` command to use. Other
+  captures print the same `NOTE:` when a value they were given was not applied
+  (a task's project or owner, a person's role or email).
 - A task request that maps to an existing task's filename is no longer
   dropped silently. An explicit priority (`--priority`, or the third field of
   `--task`) now updates the existing task, and different wording prints a
   `MATCHED` line naming the existing task. Before this, both cases printed
   `UNCHANGED`. A `--task` spec with no priority no longer resets an existing
   task to `medium`.
+- The same task title under a different `--area` wrote a duplicate task file;
+  only `lint` caught it afterwards. The write is now refused.
+- `capture interview --verdict` and `capture person --org` updated the
+  frontmatter but left the old value in the note body.
+- A round-2 interview on the same day merged into the round-1 note. It is now
+  refused with a pointer to `set interview --round` or `--date`.
+- `brain doctor` counted every warning as a broken link; it now reports
+  warnings separately.
 
 ## [1.1.0] - 2026-10-27
 

@@ -10,8 +10,10 @@ import subprocess
 from pathlib import Path
 
 from . import fmyaml
-from .core import (DATE_RE, ENUMS, NAMING, NULLABLE, REQUIRED, TYPE_BY_FOLDER,
-                   WEEK_RE, wikilink_target, write_text)
+from .body import drifted_fields, sync_meta
+from .core import (DATE_RE, ENUMS, META_LINES, NAMING, NULLABLE, REQUIRED,
+                   TYPE_BY_FOLDER, WEEK_RE, wikilink_target,
+                   write_text)
 
 BODY_LINK_RE = re.compile(r"\[\[([^\]|#\n]+)(?:[|#][^\]]*)?\]\]")
 
@@ -185,6 +187,21 @@ def lint_note(rel, fm, body, idx):
         elif not resolves(tgt, idx):
             e(field, f"wikilink target missing: {tgt}")
 
+    # task/meeting project slugs should name a project note (warning: older
+    # vaults and hand-written notes may predate the project note)
+    if ntype in ("task", "meeting"):
+        proj = fm.get("project")
+        if isinstance(proj, str) and proj and "[[" not in proj and "/" not in proj \
+                and f"Projects/{proj}" not in idx and f"Projects/{proj}/{proj}" not in idx:
+            warns.append((rel, "project", f"no project note for '{proj}' "
+                                          "(create it with `brain capture project`)"))
+
+    # body meta lines (`**Owner:** ...`) mirror frontmatter; flag drift
+    for field in sorted(drifted_fields(ntype, fm, body)):
+        label = META_LINES[ntype][field]
+        warns.append((rel, "meta", f"body '{label}' line disagrees with "
+                                   f"frontmatter {field} (run `brain lint --fix-safe`)"))
+
     # body wikilinks — warnings only (prose may reference notes not written yet)
     for m in BODY_LINK_RE.finditer(body):
         tgt = m.group(1).strip()
@@ -315,6 +332,11 @@ def fix_safe(vault):
                 fm["attendees"] = srt
                 fixes.append((rel, "sorted attendees"))
                 changed = True
+        drifted = drifted_fields(ntype, fm, body)
+        if drifted:
+            body = sync_meta(ntype, fm, body, fields=drifted)
+            fixes.append((rel, f"re-synced body lines: {sorted(drifted)}"))
+            changed = True
         if changed:
             write_text(p, fmyaml.compose(fm, body))
     return fixes

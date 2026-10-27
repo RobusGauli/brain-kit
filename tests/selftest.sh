@@ -123,6 +123,18 @@ grep -q "status: done" "$T" && ok "done sets done" || fail "done status"
 grep -q "priority: medium" "$BRAIN_ROOT/work/Tasks/admin-no-priority-given.md" \
   && ok "default priority medium" || fail "default priority"
 
+# ---- project ---------------------------------------------------------------------
+"$BRAIN" capture project --name "Harbor Rewrite" --area client >/dev/null
+assert_file "work/Projects/harbor-rewrite.md"
+grep -q "status: active" "$BRAIN_ROOT/work/Projects/harbor-rewrite.md" \
+  && ok "project is active" || fail "project not active"
+SNAP=$(snapshot "$BRAIN_ROOT/work")
+"$BRAIN" capture project --name "Harbor Rewrite" >/dev/null
+assert_eq "$(snapshot "$BRAIN_ROOT/work")" "$SNAP" "capture project is idempotent"
+"$BRAIN" capture task --desc "Draft Harbor rewrite plan" --area client >/dev/null
+grep -q "project: harbor-rewrite" "$BRAIN_ROOT/work/Tasks/client-draft-harbor-rewrite-plan.md" \
+  && ok "task infers new project" || fail "task did not infer new project"
+
 # ---- person / followup / note --------------------------------------------------
 "$BRAIN" capture person --name "Morgan Blake" --org external --email morgan@example.org >/dev/null
 assert_file "work/People/Morgan-Blake.md"
@@ -354,6 +366,249 @@ grep -q 'source: "\[\[Transcripts/potluck-planning-2026-08-13-transcript\]\]"' \
   && ok "extract-tasks source = transcript" || fail "extract-tasks source"
 OUT=$("$BRAIN" query project "lumen")
 assert_contains "$OUT" "Lumen Launch" "query project answers"
+
+# ---- set / append / query show: every entity is editable and readable through the CLI
+ER="$BRAIN_ROOT/edit-root"
+mkdir -p "$ER/work" "$ER/personal"
+eb() { BRAIN_ROOT="$ER" "$BRAIN" "$@"; }
+EW="$ER/work"
+assert_file_in() { [ -f "$1" ] && ok "exists ${1#$ER/}" || fail "missing ${1#$ER/}"; }
+esnap() { snapshot "$EW"; }
+expect_refused() {  # expect_refused "<label>" <command...>: exit 2 and nothing changed
+  local label="$1"; shift
+  local before; before=$(esnap)
+  OUT=$("$@" 2>&1); local code=$?
+  assert_exit $code "${WANT:-2}" "$label: exit ${WANT:-2}"
+  assert_eq "$(esnap)" "$before" "$label: nothing written"
+}
+
+eb capture project --name "Harbor Rewrite" --area client >/dev/null
+OUT=$(eb capture project --name "Harbor Rewrite" --area admin 2>&1)
+assert_contains "$OUT" "UNCHANGED work/Projects/harbor-rewrite.md" "re-capturing a project prints UNCHANGED (never silent)"
+assert_contains "$OUT" "brain set project harbor-rewrite --area admin" "re-capture hints at set for a different area"
+printf 'Why a slow ferment works.\n' > "$ER/ref.txt"
+eb capture note --title "bread notes" --body-file "$ER/ref.txt" >/dev/null
+OUT=$(eb capture note --title "bread notes" --body-file "$ER/ref.txt" 2>&1)
+assert_contains "$OUT" "UNCHANGED work/Reference/bread-notes.md" "re-capturing a note prints UNCHANGED (never silent)"
+assert_contains "$OUT" "brain append reference bread-notes" "re-capture note hints at append"
+
+# followup lifecycle
+eb capture followup --who "Sam Ortiz" --about "shed key copy" >/dev/null
+OUT=$(eb set followup sam-shed-key-copy --status done)
+assert_contains "$OUT" "UPDATED work/Follow-ups/sam-shed-key-copy.md" "set followup done"
+assert_contains "$(eb query waiting-on)" "(0)" "closed follow-up leaves waiting-on"
+assert_contains "$(eb query followups --status done --who Sam)" "sam-shed-key-copy" "query followups --status done --who"
+assert_contains "$(eb set followup sam-shed-key-copy --status done)" "UNCHANGED" "set is idempotent"
+eb set followup sam-shed-key-copy --status waiting >/dev/null
+grep -q "^opened: 2026-08-15" "$EW/Follow-ups/sam-shed-key-copy.md" && ok "reopen keeps opened = today" || fail "reopen opened"
+eb set followup sam-shed-key-copy --about "spare shed key" >/dev/null
+grep -q "^about: spare shed key" "$EW/Follow-ups/sam-shed-key-copy.md" && grep -q '^\*\*About:\*\* spare shed key' "$EW/Follow-ups/sam-shed-key-copy.md" \
+  && ok "set followup --about updates frontmatter and body line" || fail "followup about"
+
+# task edits
+eb capture task --desc "Draft rewrite plan" --area client --project harbor-rewrite >/dev/null
+T=client-draft-rewrite-plan
+eb set task $T --priority high --status this-week >/dev/null
+grep -q "^priority: high" "$EW/Tasks/$T.md" && grep -q "^week: 2026-W33" "$EW/Tasks/$T.md" \
+  && ok "set task priority + this-week (week set)" || fail "set task priority/status"
+grep -q "\[\[Tasks/$T\]\]" "$EW/Daily/2026-08-15.md" && ok "this-week lands in the daily Priority Tasks" || fail "daily priority line"
+eb set task $T --status backlog >/dev/null
+grep -q "^week:" "$EW/Tasks/$T.md" && fail "backlog keeps week" || ok "set task backlog drops week"
+eb set task $T --status done >/dev/null
+grep -q "^week: 2026-W33" "$EW/Tasks/$T.md" && ok "set task done fills week" || fail "done week"
+eb set task $T --status backlog --owner "Sam Ortiz" >/dev/null
+grep -q '^owner: "\?\[\[People/Sam-Ortiz\]\]' "$EW/Tasks/$T.md" && grep -q '^\*\*Owner:\*\* \[\[People/Sam-Ortiz\]\]' "$EW/Tasks/$T.md" \
+  && ok "set task owner updates frontmatter and body line" || fail "task owner"
+expect_refused "other people's tasks cannot enter the week" eb set task $T --status this-week
+eb set task $T --owner me --desc "Draft the rewrite plan v2" >/dev/null
+grep -q "^# Draft the rewrite plan v2" "$EW/Tasks/$T.md" && ok "set task --desc rewrites the H1, slug stays" || fail "task desc"
+eb set task $T --project none >/dev/null
+grep -q "^project: null" "$EW/Tasks/$T.md" && ok "set task --project none clears" || fail "project none"
+expect_refused "unknown project" eb set task $T --project nope
+expect_refused "unknown task" eb set task no-such-task --priority high
+expect_refused "bad enum" eb set task $T --priority urgent
+expect_refused "nothing to set" eb set task $T
+expect_refused "wrong folder in ref" eb set task Follow-ups/sam-shed-key-copy --priority low
+eb set task "[[Tasks/$T]]" --priority low >/dev/null && ok "ref accepts [[Folder/stem]]" || fail "wikilink ref"
+
+# vault-level duplicate title is refused at write time
+WANT=1 expect_refused "same title in another area is a duplicate task (lint refusal)" \
+  eb capture task --desc "Draft the rewrite plan v2" --area internal --priority high
+eb capture task --desc "Draft rewrite plan v3" --area client >/dev/null
+OUT=$(eb capture task --desc "Draft rewrite plan v3" --area client --priority high 2>&1)
+assert_contains "$OUT" "UPDATED work/Tasks/client-draft-rewrite-plan-v3.md" "an explicit priority updates the matched task"
+OUT=$(eb capture task --desc "Draft rewrite plan v3" --area client --owner "Sam Ortiz" 2>&1)
+assert_contains "$OUT" "keeps owner=" "capture task hints when an owner was not applied"
+assert_contains "$OUT" "brain set task client-draft-rewrite-plan-v3 --owner" "hint names the exact set command"
+
+# project lifecycle
+eb set project harbor-rewrite --status paused >/dev/null
+assert_contains "$(eb query projects --status paused)" "harbor-rewrite" "query projects --status paused"
+assert_contains "$(eb query working-on)" "Active projects (0)" "paused project leaves working-on"
+eb set project harbor --status active >/dev/null && ok "project ref accepts a unique substring" || fail "project substring"
+eb set project harbor-rewrite --area admin >/dev/null
+assert_contains "$(eb query projects --area admin)" "harbor-rewrite" "query projects --area"
+
+# person edits keep body in step
+eb capture person --name "Sam Ortiz" --role Plumber --email sam@example.org >/dev/null
+OUT=$(eb capture person --name "Sam Ortiz" --role Director 2>&1)
+assert_contains "$OUT" "keeps role='Plumber'" "capture person hints when role differs"
+eb set person Sam --role Director --email none --org external >/dev/null
+P="$EW/People/Sam-Ortiz.md"
+grep -q "^role: Director" "$P" && grep -q "^email: null" "$P" && grep -q "^org: external" "$P" \
+  && ok "set person frontmatter" || fail "set person frontmatter"
+grep -q '^\*\*Role:\*\* Director' "$P" && grep -q '^\*\*Org:\*\* external' "$P" && ! grep -q '^\*\*Email:' "$P" \
+  && ok "set person rewrites body lines (no drift)" || fail "person body drift"
+eb capture person --name "Samira Khan" >/dev/null
+expect_refused "ambiguous single-name person" eb set person Sam --role Boss
+
+# interview edits and the round guard
+eb capture interview --candidate "Ana Ruiz" --role "Staff Engineer" --round 1 --note "strong on systems" >/dev/null
+I=ana-ruiz-staff-engineer-2026-08-15
+expect_refused "a different round on the same day is refused" \
+  eb capture interview --candidate "Ana Ruiz" --role "Staff Engineer" --round 2
+eb set interview $I --verdict hire --round 2 >/dev/null
+grep -q '^\*\*Verdict:\*\* hire' "$EW/Interviews/$I.md" && grep -q '^# Ana Ruiz — Staff Engineer — round 2' "$EW/Interviews/$I.md" \
+  && ok "set interview verdict + round keep body in step" || fail "interview body drift"
+eb capture interview --candidate "Ana Ruiz" --role "Staff Engineer" --round 2 --verdict no-hire >/dev/null
+grep -q '^\*\*Verdict:\*\* no-hire' "$EW/Interviews/$I.md" && ok "capture interview --verdict updates the body line too" || fail "capture verdict drift"
+assert_contains "$(eb query interviews --verdict no-hire)" "$I" "query interviews --verdict"
+assert_contains "$(eb query interviews --candidate ana --role staff)" "$I" "query interviews --candidate --role"
+
+# content publishing
+printf 'A draft about ferments.\n' > "$ER/blog.txt"
+eb capture note --title "Blog on ferments" --folder Content --body-file "$ER/blog.txt" >/dev/null
+eb set content blog-ferments --status published >/dev/null
+assert_contains "$(eb query notes --status published)" "blog-ferments" "query notes --status published"
+assert_contains "$(eb query notes --folder Reference)" "bread-notes" "query notes --folder Reference"
+
+# meeting edits
+eb capture meeting --title "Harbor kickoff" --attendees "Sam Ortiz" --decision "ship Friday" >/dev/null
+M=harbor-kickoff-2026-08-15
+eb set meeting $M --add-attendee "Ana Ruiz" --remove-attendee "Sam Ortiz" --project harbor-rewrite >/dev/null
+grep -q '^project: harbor-rewrite' "$EW/Meetings/$M.md" && grep -q '^\*\*Attendees:\*\* \[\[People/Ana-Ruiz\]\]$' "$EW/Meetings/$M.md" \
+  && grep -q '^\*\*Project:\*\* \[\[Projects/harbor-rewrite\]\]' "$EW/Meetings/$M.md" \
+  && ok "set meeting attendees/project keep body in step" || fail "set meeting"
+expect_refused "removing a non-attendee" eb set meeting $M --remove-attendee "Sam Ortiz"
+assert_contains "$(eb query meetings --project harbor-rewrite --attendee Ana)" "$M" "query meetings --project --attendee"
+assert_contains "$(eb query meetings --until 2026-08-14)" "(0)" "query meetings --until"
+
+# append: one fixed section per type, idempotent
+printf 'Second thought: add salt.\n\n## Heading in prose\nmore\n' > "$ER/more.txt"
+OUT=$(eb append reference bread-notes --file "$ER/more.txt")
+assert_contains "$OUT" "UPDATED work/Reference/bread-notes.md" "append reference"
+assert_contains "$(eb append reference bread-notes --file "$ER/more.txt")" "UNCHANGED" "append is idempotent"
+grep -q '^\*\*Heading in prose\*\*' "$EW/Reference/bread-notes.md" && ok "append flattens headings like capture note" || fail "append headings"
+eb append person "Sam Ortiz" --text "prefers async" >/dev/null
+grep -q "^- 2026-08-15: prefers async" "$P" && ok "append person dated line" || fail "append person"
+eb append followup sam-shed-key-copy --text "he called back" >/dev/null
+grep -q "^## Updates" "$EW/Follow-ups/sam-shed-key-copy.md" && grep -q "he called back" "$EW/Follow-ups/sam-shed-key-copy.md" && ok "append followup" || fail "append followup"
+eb append project harbor-rewrite --milestone "Kickoff" --text "Rewrite the harbor tooling." >/dev/null
+grep -q "^- \[ \] Kickoff" "$EW/Projects/harbor-rewrite.md" && grep -q "Rewrite the harbor tooling" "$EW/Projects/harbor-rewrite.md" && ok "append project context + milestone" || fail "append project"
+eb append meeting $M --decision "no scope creep" >/dev/null
+assert_contains "$(eb query show Meetings/$M)" "no scope creep" "append meeting decision"
+eb append interview $I --note "asked about oncall" >/dev/null
+grep -q "asked about oncall" "$EW/Interviews/$I.md" && ok "append interview note" || fail "append interview"
+eb append task $T --text "blocked on API" >/dev/null
+grep -q "blocked on API" "$EW/Tasks/$T.md" && ok "append task" || fail "append task"
+eb append content blog-ferments --text "One more paragraph." >/dev/null
+grep -q "One more paragraph" "$EW/Content/blog-ferments.md" && ok "append content" || fail "append content"
+eb append daily --log "worked on the harbor" --dump "idea: tide chart" >/dev/null
+eb append daily 2026-08-14 --log "yesterday" >/dev/null
+assert_file_in "$EW/Daily/2026-08-14.md"
+grep -q "worked on the harbor" "$EW/Daily/2026-08-15.md" && grep -q "idea: tide chart" "$EW/Daily/2026-08-15.md" && ok "append daily --log/--dump" || fail "append daily"
+expect_refused "append with no text" eb append reference bread-notes
+expect_refused "append to a missing note" eb append reference no-such-note --text "x"
+expect_refused "append to a transcript is not offered" eb append transcript x --text y
+printf '' > "$ER/empty.txt"
+expect_refused "append of an empty file" eb append reference bread-notes --file "$ER/empty.txt"
+
+# edge cases found in review: refs, whitespace, prose safety, search folding
+eb capture project --name "The Mobile Apps for Clients" >/dev/null
+eb set project "The Mobile Apps for Clients" --status paused >/dev/null && ok "project ref works with the project's own name" || fail "project name ref"
+expect_refused "junk project ref never matches" eb set project "???" --status done
+expect_refused "a longer name does not fuzzy-match a shorter project" eb append project "Harbor Rewrite Extra Words" --milestone x
+eb set project "mobile apps clients" --status active >/dev/null
+printf 'Harbor\n' > "$ER/h.txt"
+assert_contains "$(eb append project harbor-rewrite --text "Harbor")" "UPDATED" "append dedupes only within its own section (title text does not block it)"
+eb set interview $I --round '2\' >/dev/null && ok "set interview round accepts a backslash" || fail "round backslash"
+grep -q '^# Ana Ruiz — Staff Engineer — round 2\\ (2026-08-15)' "$EW/Interviews/$I.md" && ok "round rewrite touches only the round" || fail "round H1"
+eb set interview $I --round 2 >/dev/null
+eb capture interview --candidate "Lee Wu" --role "Playground Designer" --round 1 --note x >/dev/null
+eb set interview lee-wu-playground-designer-2026-08-15 --round 2 >/dev/null
+grep -q '^# Lee Wu — Playground Designer — round 2 (2026-08-15)' "$EW/Interviews/lee-wu-playground-designer-2026-08-15.md" \
+  && ok "round rewrite leaves a role like 'Playground' alone" || fail "playground role"
+eb set followup sam-shed-key-copy --about $'send keys\nand badge' >/dev/null
+grep -q '^about: send keys and badge$' "$EW/Follow-ups/sam-shed-key-copy.md" && ok "newlines in a set value collapse to a space" || fail "newline about"
+eb set followup sam-shed-key-copy --about "spare shed key" >/dev/null
+eb capture task --desc "review budget" --area admin --this-week >/dev/null
+expect_refused "reassigning a this-week task away from you needs --status backlog" eb set task admin-review-budget --owner "Sam Ortiz"
+eb set task admin-review-budget --owner "Sam Ortiz" --status backlog >/dev/null && ok "reassign + backlog together works" || fail "reassign backlog"
+expect_refused "--week on a backlog task" eb set task admin-review-budget --week 2026-W40
+printf '\n## Notes\n\n**Email:** prefers Slack, not email\n\n```\nline a\n\n\n\nline b\n```\n' >> "$P"
+assert_contains "$(eb lint)" "lint: clean" "prose that looks like a meta line below a section heading is not drift"
+BEFORE_P=$(cat "$P")
+eb lint --fix-safe >/dev/null
+eb set person "Sam Ortiz" --email sam@example.org >/dev/null
+grep -q 'prefers Slack, not email' "$P" && grep -q 'line a$' "$P" && grep -qx '' "$P" && ok "prose below headings survives set and --fix-safe" || fail "prose clobbered"
+awk '/^```$/{f=!f; next} f' "$P" | tr '\n' '|' | grep -q '^line a||||line b|$' && ok "set does not collapse blank lines inside prose" || fail "blank lines collapsed"
+printf 'The café menu and Zürich office.\n' > "$ER/acc.txt"
+eb capture note --title "Office tour" --body-file "$ER/acc.txt" >/dev/null
+assert_contains "$(eb query search café)" "Reference/office-tour" "query search finds accented words"
+assert_contains "$(eb query search zurich)" "Reference/office-tour" "query search folds accents both ways"
+eb append reference office-tour --text '#followup ask about the lease' >/dev/null
+eb append reference office-tour --text 'Second paragraph.' >/dev/null
+awk '/^## Notes/{f=1} f' "$EW/Reference/office-tour.md" | grep -n "" | grep -q 'Second paragraph' \
+  && [ "$(grep -n 'Second paragraph' "$EW/Reference/office-tour.md" | cut -d: -f1)" -gt "$(grep -n '#followup' "$EW/Reference/office-tour.md" | cut -d: -f1)" ] \
+  && ok "append keeps order when an earlier block starts with a #tag" || fail "tag ordering"
+
+# round-2 review: whole-word project refs, paragraph dedupe, apostrophes, one-line capture flags
+eb capture project --name "Rapid Prototyping" >/dev/null
+expect_refused "a fragment of a word is not a project ref" eb append project api --milestone "v1"
+eb set project prototyping --status active >/dev/null && ok "a whole word of the slug is a project ref" || fail "whole-word ref"
+eb append project harbor-rewrite --text "Harbor Rewrite kickoff notes" >/dev/null
+assert_contains "$(eb append project harbor-rewrite --text "kickoff")" "UPDATED" "text inside a longer line is still appended"
+assert_contains "$(eb append project harbor-rewrite --text "kickoff")" "UNCHANGED" "a whole paragraph already there is not repeated"
+printf "O'Brien's don't-list\n" > "$ER/ap.txt"
+eb capture note --title "apostrophe list" --body-file "$ER/ap.txt" >/dev/null
+assert_contains "$(eb query search "O'Brien")" "apostrophe-list" "query search handles apostrophes"
+eb capture person --name "Cy Dee" --role $'Lead\nDev' >/dev/null
+grep -q '^role: Lead Dev$' "$EW/People/Cy-Dee.md" && ok "capture collapses newlines in one-line flags" || fail "capture newline"
+
+# one-note reads and new listings
+OUT=$(eb query show Tasks/$T)
+assert_contains "$OUT" "blocked on API" "query show prints the whole note"
+assert_contains "$OUT" "- priority:" "query show lists the fields"
+assert_contains "$(eb query show Daily/2026-08-14)" "yesterday" "query show a past daily note"
+assert_contains "$(eb query show $T)" "# Draft the rewrite plan v2" "query show accepts a bare unique stem"
+expect_refused "query show of nothing" eb query show Tasks/nope
+assert_contains "$(eb query dailies --since 2026-08-15)" "Daily/2026-08-15" "query dailies --since"
+assert_contains "$(eb query people --org external --text director)" "Sam-Ortiz" "query people --org --text"
+assert_contains "$(eb query tasks --area client --priority low)" "$T" "query tasks --area --priority"
+assert_contains "$(eb query tasks --week 2026-W33 --owner all)" "(0" "query tasks --week"
+OUT=$(eb query search "scope creep")
+assert_contains "$OUT" "Meetings/$M" "query search finds a decision"
+assert_contains "$(eb query search "scope creep" --type task)" "(0)" "query search --type"
+assert_contains "$(eb query transcripts)" "Transcripts (0)" "query transcripts (none yet)"
+
+# determinism: the same write twice leaves the vault byte-identical
+BEFORE=$(esnap)
+eb set task $T --priority low >/dev/null
+eb set person Sam --role Director >/dev/null
+eb append person "Sam Ortiz" --text "prefers async" >/dev/null
+eb append daily --log "worked on the harbor" >/dev/null
+assert_eq "$(esnap)" "$BEFORE" "repeating set/append changes nothing"
+
+# lint stays clean after all of the above; drift is warned and fixable
+assert_contains "$(eb lint)" "lint: clean" "vault lints clean after set/append"
+sed -i.bak 's/^\*\*Role:\*\* Director/**Role:** Janitor/' "$P" && rm -f "$P.bak"
+assert_contains "$(eb lint)" "disagrees with frontmatter role" "lint warns on body/frontmatter drift"
+eb lint --fix-safe >/dev/null
+grep -q '^\*\*Role:\*\* Director' "$P" && ok "lint --fix-safe repairs drift" || fail "fix-safe drift"
+mkdir -p "$EW/Tasks"
+printf -- '---\ntype: task\nschema: 1\ncreated: 2026-08-15\ntags:\n  - task\nstatus: backlog\nowner: "[[People/Sam-Ortiz]]"\nproject: ghost-project\narea: admin\npriority: low\nsource: null\n---\n\n# Ghost task\n\n**Owner:** [[People/Sam-Ortiz]]\n**Source:** —\n' > "$EW/Tasks/admin-ghost-task.md"
+assert_contains "$(eb lint)" "no project note for 'ghost-project'" "lint warns on a task naming a missing project"
+rm -f "$EW/Tasks/admin-ghost-task.md"
 
 # ---- personal vault mode ------------------------------------------------------------
 "$BRAIN" mode personal --because "in my personal brain, ..." >/dev/null

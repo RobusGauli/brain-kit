@@ -134,6 +134,36 @@ or assessment; the CLI refuses otherwise.
   `transcript:`.
 - `week` must be `YYYY-Www`; `date`, `opened`, `created` must be `YYYY-MM-DD`.
 - Filenames must match the naming rules above.
+- Warnings (not errors): a `task.project` / `meeting.project` with no project
+  note; a body meta line (`**Owner:**`, `**Role:**`, `**Verdict:**`, …) that
+  disagrees with its frontmatter field (`lint --fix-safe` re-syncs it).
+
+## Mutability
+
+A note's filename is its identity. `set` and `append` never rename a file:
+changing a task's `--desc` or a follow-up's `--about` changes only the H1.
+
+| type | identity (never changes) | `set` fields | `append` target |
+|---|---|---|---|
+| task | slug | `status`, `priority`, `area`, `owner`, `project`, `desc`, `week` | `## Notes` (dated line) |
+| followup | slug | `status`, `about` | `## Updates` (dated line) |
+| project | slug | `status`, `area` | `## Context` (prose), `## Milestones` (`- [ ]` lines) |
+| person | name | `org`, `role`, `email` | `## Notes` (dated line) |
+| interview | candidate, role, date | `verdict`, `round` | `## Notes During Interview`, `## Assessment` |
+| meeting | title, date | `project`, attendees | `## Summary` (prose), `## Decisions` |
+| content | slug | `status` | `## Draft` (prose) |
+| reference | slug | none | `## Notes` (prose) |
+| daily | date | none | `## Work Log`, `## Brain Dump` (created if missing) |
+| transcript | slug | none: transcripts are immutable | none |
+
+- `set` mirrors a field into its body line (`**Owner:**`, `**Role:**`, …), so
+  the two never disagree. `none` clears a nullable field.
+- Task: `--status backlog` removes `week`; `this-week` needs the owner's own
+  task and sets `week` (and the daily Priority Tasks line); `done` fills
+  `week` if empty.
+- Follow-up: going from `done` back to `waiting` sets `opened` to today.
+- `--project` on a task or meeting must name an existing project note.
+- Appending is idempotent: the same text twice adds it once.
 
 ## Links
 

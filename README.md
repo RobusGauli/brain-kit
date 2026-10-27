@@ -78,11 +78,11 @@ config. You can read [install.sh](install.sh) before you run it. It is short.
 To install a specific version, pin it:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/RobusGauli/brain-kit/main/install.sh | sh -s v1.1.0
+curl -fsSL https://raw.githubusercontent.com/RobusGauli/brain-kit/main/install.sh | sh -s v1.2.0
 ```
 
 ```powershell
-$env:BRAIN_KIT_REF = 'v1.1.0'; irm https://raw.githubusercontent.com/RobusGauli/brain-kit/main/install.ps1 | iex
+$env:BRAIN_KIT_REF = 'v1.2.0'; irm https://raw.githubusercontent.com/RobusGauli/brain-kit/main/install.ps1 | iex
 ```
 
 ### Updating
@@ -194,6 +194,7 @@ brain capture interview --candidate NAME --role R --round N [--date D]
 brain capture task      --desc D --area client|internal|admin|learning
                         [--owner NAME] [--priority high|medium|low] [--this-week]
 brain capture note      --title T --body-file F [--folder Reference|Content]
+brain capture project   --name NAME [--area client|internal|admin|learning] [--context-file F]
 brain capture person    --name NAME [--org internal|external] [--role R] [--email E]
 brain capture followup  --who NAME --about TEXT
 brain extract-tasks     --task "desc|area|priority|owner"... [--title T --date D --transcript-file F]
@@ -201,12 +202,36 @@ brain extract-tasks     --task "desc|area|priority|owner"... [--title T --date D
 brain promote --task SLUG...        # backlog -> this-week
 brain done    --task SLUG...
 
+# change what exists: `set` edits fields, `append` adds prose. Neither creates a note to edit (`set task --owner` and `set meeting --add-attendee` may add a missing People stub, as `capture` does).
+brain set task      SLUG [--status backlog|this-week|done] [--priority P] [--area A]
+                         [--owner NAME] [--project SLUG|none] [--desc TEXT] [--week YYYY-Www]
+brain set followup  SLUG [--status waiting|done] [--about TEXT]
+brain set project   REF  [--status active|paused|done] [--area A]
+brain set person    REF  [--org internal|external] [--role TEXT|none] [--email TEXT|none]
+brain set interview SLUG [--verdict pending|hire|no-hire] [--round N]
+brain set content   SLUG [--status draft|published]
+brain set meeting   SLUG [--project SLUG|none] [--add-attendee NAME]... [--remove-attendee NAME]...
+brain append reference|content|person|followup|task REF (--text T | --file F)
+brain append project    REF [--text T | --file F] [--milestone T]...
+brain append meeting    REF [--text T | --file F] [--decision T]...
+brain append interview  REF [--file F] [--note T]...
+brain append daily [YYYY-MM-DD] [--log T]... [--dump T]...
+
 brain query tasks [--status backlog|this-week|done] [--project SLUG] [--owner me|all|NAME]
+                  [--area A] [--priority P] [--week YYYY-Www]
 brain query working-on | waiting-on | today
 brain query person NAME
 brain query project NAME
-brain query meetings [--since YYYY-MM-DD]
-brain query notes [TEXT]   # Reference/ and Content/ notes
+brain query meetings [--since D] [--until D] [--project SLUG] [--attendee NAME]
+brain query notes [TEXT] [--folder Reference|Content] [--status draft|published]
+brain query show FOLDER/STEM          # any one note, in full
+brain query projects [--status active|paused|done|all] [--area A]
+brain query followups [--status waiting|done|all] [--who NAME]
+brain query interviews [--verdict V] [--candidate NAME] [--role WORDS] [--since D]
+brain query people [--org internal|external] [--text WORDS]
+brain query dailies [--since D] [--until D]
+brain query transcripts [--since D]
+brain query search WORDS [--type T] [--since D]
 
 brain lint   [--fix-safe] [--vault work|personal|both]
 brain doctor [--vault work|personal|both]   # lint errors, broken links, orphans

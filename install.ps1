@@ -19,7 +19,7 @@
 # lines, then `python:`, `cli:`, `version:`, `source:` and a final `done.`.
 # No `done.` line means the install did not finish.
 #
-# Pin a version: $env:BRAIN_KIT_REF = 'v1.1.0' (a tag, branch or commit;
+# Pin a version: $env:BRAIN_KIT_REF = 'v1.2.0' (a tag, branch or commit;
 # default: the latest release).
 #
 # Overrides: $env:BRAIN_KIT_REF (see above),
