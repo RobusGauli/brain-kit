@@ -373,7 +373,8 @@ def slug_key(text, max_tokens=SLUG_TOKENS):
     """Deterministic filename slug: slugify, drop stopwords, keep the first
     `max_tokens` significant tokens. Trailing embellishment a model might add
     ("… by Friday 2026-08-21", "… next weekend Aug 22-23") falls off the end,
-    so the artifact path is stable across sessions."""
+    so the artifact path is stable across sessions. `max_tokens=None` keeps
+    every significant token, for comparing two phrasings in full."""
     toks = [_stem(t) for t in slugify(text).split("-") if t]
     sig = [t for t in toks if t and t not in SLUG_STOP]
     if not sig:
