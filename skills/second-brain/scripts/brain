@@ -8,7 +8,7 @@ from pathlib import Path
 # scripts/brain imports scripts/lib/*
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-VERSION = "1.1.0"
+VERSION = "1.1.1"
 
 from lib import capture, query, vaultdocs  # noqa: E402
 from lib.core import (config_path, current_mode, iso_week, name_parts,

@@ -4,7 +4,7 @@ All notable changes to brain-kit. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [1.1.1] - 2026-10-27
 
 ### Fixed
 - A task request that maps to an existing task's filename is no longer
@@ -47,6 +47,7 @@ All notable changes to brain-kit. The format follows
 - First release: the `second-brain` skill and its CLI, installers for macOS,
   Linux and Windows, and CI on all three.
 
+[1.1.1]: https://github.com/RobusGauli/brain-kit/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/RobusGauli/brain-kit/compare/v1.0.1...v1.1.0
 [1.0.1]: https://github.com/RobusGauli/brain-kit/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/RobusGauli/brain-kit/releases/tag/v1.0.0

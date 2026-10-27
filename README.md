@@ -78,11 +78,11 @@ config. You can read [install.sh](install.sh) before you run it. It is short.
 To install a specific version, pin it:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/RobusGauli/brain-kit/main/install.sh | sh -s v1.1.0
+curl -fsSL https://raw.githubusercontent.com/RobusGauli/brain-kit/main/install.sh | sh -s v1.1.1
 ```
 
 ```powershell
-$env:BRAIN_KIT_REF = 'v1.1.0'; irm https://raw.githubusercontent.com/RobusGauli/brain-kit/main/install.ps1 | iex
+$env:BRAIN_KIT_REF = 'v1.1.1'; irm https://raw.githubusercontent.com/RobusGauli/brain-kit/main/install.ps1 | iex
 ```
 
 ### Updating
