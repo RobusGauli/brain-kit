@@ -1,0 +1,7 @@
+# {{name}}
+
+## Context
+
+{{context}}
+
+## Milestones

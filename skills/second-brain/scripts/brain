@@ -8,13 +8,14 @@ from pathlib import Path
 # scripts/brain imports scripts/lib/*
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 
-from lib import capture, query, vaultdocs  # noqa: E402
+from lib import capture, edit, query, vaultdocs  # noqa: E402
 from lib.core import (config_path, current_mode, iso_week, name_parts,
                       owner_name, owner_problem, read_config, require_owner,
                       resolve_ctx, set_mode, setting, today, vault_path,
                       write_config)  # noqa: E402
+from lib.core import TYPE_BY_FOLDER  # noqa: E402
 from lib.linter import fix_safe, lint_vault, orphans  # noqa: E402
 
 
@@ -109,6 +110,12 @@ def build_parser():
     pe.add_argument("--role")
     pe.add_argument("--email")
 
+    pj = csub.add_parser("project")
+    pj.add_argument("--name", required=True)
+    pj.add_argument("--area", choices=["client", "internal", "admin", "learning"],
+                    help="default: internal")
+    pj.add_argument("--context-file", help="prose for ## Context")
+
     f = csub.add_parser("followup")
     f.add_argument("--who", required=True)
     f.add_argument("--about", required=True)
@@ -128,6 +135,9 @@ def build_parser():
     qt = qsub.add_parser("tasks")
     qt.add_argument("--status", choices=["backlog", "this-week", "done"])
     qt.add_argument("--project")
+    qt.add_argument("--area", choices=["client", "internal", "admin", "learning"])
+    qt.add_argument("--priority", choices=["high", "medium", "low"])
+    qt.add_argument("--week", metavar="YYYY-Www")
     qt.add_argument("--owner", default="me",
                     help="'me' (default, the vault owner), 'all', or a person's name")
     qsub.add_parser("working-on")
@@ -139,9 +149,107 @@ def build_parser():
     qj.add_argument("name")
     qm = qsub.add_parser("meetings")
     qm.add_argument("--since")
+    qm.add_argument("--until")
+    qm.add_argument("--project", metavar="SLUG")
+    qm.add_argument("--attendee", metavar="NAME")
     qn = qsub.add_parser("notes", help="Reference and Content notes; one match "
                          "prints the whole note")
     qn.add_argument("text", nargs="?", default="")
+    qn.add_argument("--folder", choices=["Reference", "Content"])
+    qn.add_argument("--status", choices=["draft", "published"],
+                    help="Content notes only")
+    qs = qsub.add_parser("show", help="print one note in full")
+    qs.add_argument("link", help="Folder/stem exactly as other queries print it")
+    qpj = qsub.add_parser("projects", help="projects of every status")
+    qpj.add_argument("--status", choices=["active", "paused", "done", "all"],
+                     default="all")
+    qpj.add_argument("--area", choices=["client", "internal", "admin", "learning"])
+    qf = qsub.add_parser("followups", help="open (default) or closed follow-ups")
+    qf.add_argument("--status", choices=["waiting", "done", "all"], default="waiting")
+    qf.add_argument("--who", metavar="NAME")
+    qi = qsub.add_parser("interviews")
+    qi.add_argument("--verdict", choices=["pending", "hire", "no-hire"])
+    qi.add_argument("--candidate", metavar="NAME")
+    qi.add_argument("--role", metavar="WORDS")
+    qi.add_argument("--since")
+    qpe = qsub.add_parser("people")
+    qpe.add_argument("--org", choices=["internal", "external"])
+    qpe.add_argument("--text", metavar="WORDS", help="matches name or role")
+    qd = qsub.add_parser("dailies")
+    qd.add_argument("--since")
+    qd.add_argument("--until")
+    qtr = qsub.add_parser("transcripts")
+    qtr.add_argument("--since")
+    qse = qsub.add_parser("search", help="find notes whose text has all the words")
+    qse.add_argument("text")
+    qse.add_argument("--type", choices=sorted(TYPE_BY_FOLDER.values()))
+    qse.add_argument("--since")
+
+    st = sub.add_parser("set", help="change fields of an existing note")
+    stsub = st.add_subparsers(dest="type", required=True)
+    TASK_AREAS = ["client", "internal", "admin", "learning"]
+    s = stsub.add_parser("task")
+    s.add_argument("ref", help="task slug from `query tasks`")
+    s.add_argument("--status", choices=["backlog", "this-week", "done"])
+    s.add_argument("--priority", choices=["high", "medium", "low"])
+    s.add_argument("--area", choices=TASK_AREAS)
+    s.add_argument("--owner", metavar="NAME")
+    s.add_argument("--project", metavar="SLUG|none")
+    s.add_argument("--desc", help="new title; the filename never changes")
+    s.add_argument("--week", metavar="YYYY-Www")
+    s = stsub.add_parser("followup")
+    s.add_argument("ref")
+    s.add_argument("--status", choices=["waiting", "done"])
+    s.add_argument("--about")
+    s = stsub.add_parser("project")
+    s.add_argument("ref")
+    s.add_argument("--status", choices=["active", "paused", "done"])
+    s.add_argument("--area", choices=TASK_AREAS)
+    s = stsub.add_parser("person")
+    s.add_argument("ref")
+    s.add_argument("--org", choices=["internal", "external"])
+    s.add_argument("--role", metavar="TEXT|none")
+    s.add_argument("--email", metavar="TEXT|none")
+    s = stsub.add_parser("interview")
+    s.add_argument("ref")
+    s.add_argument("--verdict", choices=["pending", "hire", "no-hire"])
+    s.add_argument("--round")
+    s = stsub.add_parser("content")
+    s.add_argument("ref")
+    s.add_argument("--status", choices=["draft", "published"])
+    s = stsub.add_parser("meeting")
+    s.add_argument("ref")
+    s.add_argument("--project", metavar="SLUG|none")
+    s.add_argument("--add-attendee", action="append", metavar="NAME")
+    s.add_argument("--remove-attendee", action="append", metavar="NAME")
+
+    ap = sub.add_parser("append", help="add prose to an existing note's section")
+    apsub = ap.add_subparsers(dest="type", required=True)
+
+    def _prose(sp):
+        sp.add_argument("--text")
+        sp.add_argument("--file")
+
+    for t in ("reference", "content", "person", "followup", "task"):
+        s = apsub.add_parser(t)
+        s.add_argument("ref")
+        _prose(s)
+    s = apsub.add_parser("project")
+    s.add_argument("ref")
+    _prose(s)
+    s.add_argument("--milestone", action="append", metavar="TEXT")
+    s = apsub.add_parser("meeting")
+    s.add_argument("ref")
+    _prose(s)
+    s.add_argument("--decision", action="append", metavar="TEXT")
+    s = apsub.add_parser("interview")
+    s.add_argument("ref")
+    _prose(s)
+    s.add_argument("--note", action="append", metavar="TEXT")
+    s = apsub.add_parser("daily")
+    s.add_argument("ref", nargs="?", metavar="YYYY-MM-DD")
+    s.add_argument("--log", action="append", metavar="TEXT")
+    s.add_argument("--dump", action="append", metavar="TEXT")
 
     pr = sub.add_parser("promote", help="task backlog -> this-week")
     pr.add_argument("--task", action="append", required=True, metavar="SLUG")
@@ -249,12 +357,16 @@ def cmd_doctor(ctx, args):
             continue
         errs, warns = lint_vault(vault)
         orph = orphans(vault)
-        print(f"== {mode}: {len(errs)} lint error(s), {len(warns)} broken link(s), "
-              f"{len(orph)} orphan(s)")
+        links = [w for w in warns if w[1] == "body"]
+        other = [w for w in warns if w[1] != "body"]
+        print(f"== {mode}: {len(errs)} lint error(s), {len(links)} broken link(s), "
+              f"{len(other)} warning(s), {len(orph)} orphan(s)")
         for rel, field, prob in errs:
             print(f"ERROR  {rel}:{field}:{prob}")
-        for rel, _, prob in warns:
+        for rel, _, prob in links:
             print(f"BROKEN {rel}: {prob}")
+        for rel, field, prob in other:
+            print(f"WARN   {rel}:{field}:{prob}")
         for rel in orph:
             print(f"ORPHAN {rel}")
         bad += len(errs)
@@ -302,8 +414,17 @@ def main():
               "task": capture.cmd_capture_task,
               "note": capture.cmd_capture_note,
               "person": capture.cmd_capture_person,
+              "project": capture.cmd_capture_project,
               "followup": capture.cmd_capture_followup}[args.what]
+        for attr in ("about", "role", "email", "desc", "name", "title", "candidate",
+                     "who", "context"):  # one-line flags never carry a newline
+            if isinstance(getattr(args, attr, None), str):
+                setattr(args, attr, " ".join(getattr(args, attr).split()))
         return fn(ctx, mode, args)
+    if args.cmd == "set":
+        return edit.cmd_set(ctx, mode, args)
+    if args.cmd == "append":
+        return edit.cmd_append(ctx, mode, args)
     if args.cmd == "extract-tasks":
         return capture.cmd_extract_tasks(ctx, mode, args)
     if args.cmd == "promote":
@@ -315,7 +436,12 @@ def main():
         fn = {"tasks": query.cmd_tasks, "working-on": query.cmd_working_on,
               "waiting-on": query.cmd_waiting_on, "today": query.cmd_today,
               "person": query.cmd_person, "project": query.cmd_project,
-              "meetings": query.cmd_meetings, "notes": query.cmd_notes}[args.what]
+              "meetings": query.cmd_meetings, "notes": query.cmd_notes,
+              "show": query.cmd_show, "projects": query.cmd_projects,
+              "followups": query.cmd_followups,
+              "interviews": query.cmd_interviews, "people": query.cmd_people,
+              "dailies": query.cmd_dailies, "transcripts": query.cmd_transcripts,
+              "search": query.cmd_search}[args.what]
         return fn(vault, args)
     return 0
 

@@ -61,6 +61,30 @@ NULLABLE = {
     "project": set(), "followup": set(), "interview": set(), "content": set(),
 }
 
+# Body lines that mirror a frontmatter field: `**Label:** value`. `set` rewrites
+# them with the field, and lint warns when they drift apart.
+META_LINES = {
+    "task": {"owner": "Owner", "source": "Source"},
+    "person": {"role": "Role", "org": "Org", "email": "Email"},
+    "followup": {"who": "Who", "about": "About"},
+    "interview": {"role": "Role", "round": "Round", "verdict": "Verdict"},
+    "meeting": {"date": "Date", "project": "Project", "attendees": "Attendees"},
+}
+
+
+def meta_value(ntype, field, fm):
+    """What the body line for `field` should say; None means no line at all
+    (only people omit empty fields; everything else shows an em dash)."""
+    v = fm.get(field)
+    if ntype == "meeting" and field == "project":
+        return f"[[Projects/{v}]]" if v else "\u2014"
+    if ntype == "meeting" and field == "attendees":
+        return ", ".join(v or []) or "\u2014"
+    if v in (None, "", []):
+        return None if ntype == "person" else "\u2014"
+    return str(v).strip()
+
+
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 WEEK_RE = re.compile(r"^\d{4}-W\d{2}$")
 WIKILINK_RE = re.compile(r"^\[\[([^\]|#]+)(\|[^\]]*)?\]\]$")

@@ -30,7 +30,7 @@ def prune_empty_sections(body, keep=()):
         if line.startswith("## "):
             name = line[3:].strip()
             j = i + 1
-            while j < len(lines) and not lines[j].startswith("#"):
+            while j < len(lines) and not re.match(r"^#{1,6} ", lines[j]):
                 j += 1
             content = "\n".join(lines[i + 1:j]).strip()
             if not content and name not in keep:
@@ -66,7 +66,7 @@ def ensure_line_in_section(body, section, line):
         return out
     end = len(lines)
     for j in range(start + 1, len(lines)):
-        if lines[j].startswith("#"):
+        if re.match(r"^#{1,6} ", lines[j]):
             end = j
             break
     # insert after last non-empty line of the section
@@ -87,7 +87,7 @@ def section_text(body, section):
         return ""
     out = []
     for l in lines[start + 1:]:
-        if l.startswith("#"):
+        if re.match(r"^#{1,6} ", l):
             break
         out.append(l)
     return "\n".join(out).strip("\n")
@@ -113,6 +113,38 @@ class Plan:
     def put(self, rel, fm, body):
         self.pending[rel] = (fm, body)
 
+    def touch(self, rel):
+        """Register an existing note as unchanged so the run still prints an
+        `UNCHANGED` line: a write command never exits silently."""
+        got = self.load(rel)
+        if got is not None:
+            self.pending.setdefault(rel, got)
+
+    def _duplicate_task_titles(self):
+        """Vault-level rule the per-note lint cannot see: two task notes with
+        the same title (disk plus pending)."""
+        titles = {}
+        d = self.vault / "Tasks"
+        rels = {f"Tasks/{f.name}" for f in d.glob("*.md")} if d.is_dir() else set()
+        rels |= {r for r in self.pending if r.startswith("Tasks/")}
+        errors = []
+        for rel in sorted(rels):
+            got = self.load(rel)
+            if not got or got[0].get("type") != "task":
+                continue
+            m = re.search(r"^# (.+)$", got[1], re.MULTILINE)
+            if not m:
+                continue
+            key = m.group(1).strip().lower()
+            if key in titles:
+                # blame a note this run touches; an old duplicate stays a lint matter
+                if rel in self.pending or titles[key] in self.pending:
+                    errors.append((rel, "title", "duplicate task definition "
+                                   f"(same title as {titles[key]})"))
+            else:
+                titles[key] = rel
+        return errors
+
     def _drop_noise_dailies(self):
         """Never create a brand-new daily note that nothing links into: an
         empty Daily/<date>.md is pure vault noise. Existing dailies are
@@ -131,7 +163,7 @@ class Plan:
     def execute(self):
         self._drop_noise_dailies()
         idx = link_index(self.vault, extra=list(self.pending))
-        errors = []
+        errors = self._duplicate_task_titles()
         for rel in sorted(self.pending):
             fm, body = self.pending[rel]
             errs, _ = lint_note(rel, fm, body, idx)

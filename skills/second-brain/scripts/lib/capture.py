@@ -4,11 +4,12 @@ import re
 import sys
 from pathlib import Path
 
-from .core import (default_org, iso_week, owner_link, owner_name, parse_date,
+from .core import (die, default_org, iso_week, owner_link, owner_name, parse_date,
                    parse_week, person_filename, require_slug, self_words,
                    slug_key, slugify, today, wikilink_target)
 from .people import AmbiguousPerson, people_stems, resolve_stem
-from .projects import active_project_slugs
+from .projects import active_project_slugs, project_rels
+from .body import sync_meta
 from .writer import Plan, ensure_line_in_section, render
 
 
@@ -31,6 +32,12 @@ def infer_project(plan, text):
         elif n == best_n and n > 0:
             tied = True
     return None if (best_n == 0 or tied) else best
+
+
+def note(text):
+    """A deterministic hint on stderr: capture merges and never overwrites, so
+    say so when a value the caller passed was not applied."""
+    print(f"NOTE: {text}", file=sys.stderr)
 
 
 def _base_fm(ntype, created):
@@ -126,15 +133,20 @@ def ensure_person(plan, name, org=None, role=None, email=None, seen=None):
         existing = plan.load(rel)
         if existing is not None and (org or role or email):
             fm, body = existing
+            changed = set()
             if org:
                 fm["org"] = org
-            if role and not fm.get("role"):
-                fm["role"] = role
-            if email and not fm.get("email"):
-                fm["email"] = email
-            meta = person_meta(fm.get("org"), fm.get("role"),
-                               fm.get("email"), None)
-            body = _merge_meta(body, meta)
+                changed.add("org")
+            for key, val in (("role", role), ("email", email)):
+                if not val:
+                    continue
+                if not fm.get(key):
+                    fm[key] = val
+                    changed.add(key)
+                elif fm[key] != val.strip():
+                    note(f"{rel} keeps {key}={fm[key]!r}; to change it run: "
+                         f"brain set person {resolved} --{key} \"{val}\"")
+            body = sync_meta("person", fm, body, fields=changed)
             plan.put(rel, fm, body)
         elif rel not in plan.pending:
             plan.linked.add(rel)
@@ -190,7 +202,7 @@ def resolve_owner(plan, owner):
 
 
 def make_task(plan, desc, area, priority, project, source, date,
-              owner=None, context=None):
+              owner=None, context=None, explicit=False):
     project = project or infer_project(plan, desc)
     owner_link = resolve_owner(plan, owner)
     slug = f"{area}-{require_slug(slug_key(desc, 4), '--desc', desc)}"
@@ -211,6 +223,13 @@ def make_task(plan, desc, area, priority, project, source, date,
         note_seen(plan, owner_link.strip("[]"), f"[[Tasks/{slug}]]")
     else:
         fm, body = existing
+        if explicit:
+            for key, val in (("priority", priority), ("project", project),
+                             ("owner", owner_link)):
+                if val and fm.get(key) not in (None, "", val):
+                    note(f"{rel} keeps {key}={fm[key]}; to change it run: "
+                         f"brain set task {slug} --{key} "
+                         f"{str(val).strip('[]').split('/')[-1]}")
         if fm.get("project") in (None, "") and project:
             fm["project"] = project
         if fm.get("source") in (None, "") and source:
@@ -420,8 +439,14 @@ def cmd_capture_interview(ctx, mode, args):
         plan.put(rel, fm, body)
     else:
         fm, body = existing
+        if str(fm.get("round")) != args.round.strip():
+            die(f"{rel} is round {fm.get('round')}, not round {args.round.strip()}. "
+                "Use --date for a different day's interview, or change this "
+                f"one with: brain set interview {Path(rel).stem} --round "
+                f"{args.round.strip()}. Nothing was written.")
         if args.verdict:
             fm["verdict"] = verdict
+            body = sync_meta("interview", fm, body, fields={"verdict"})
         if notes and notes not in body:
             body = ensure_line_in_section(body, "Notes During Interview", notes)
         if assessment and assessment not in body:
@@ -435,7 +460,8 @@ def cmd_capture_task(ctx, mode, args):
     date = today().isoformat()
     plan = Plan(ctx, mode)
     slug = make_task(plan, args.desc, args.area, args.priority, args.project,
-                     args.source, date, owner=args.owner, context=args.context)
+                     args.source, date, owner=args.owner, context=args.context,
+                     explicit=True)
     if getattr(args, "this_week", False):
         rel = f"Tasks/{slug}.md"
         fm, body = plan.load(rel)
@@ -514,6 +540,10 @@ def cmd_capture_note(ctx, mode, args):
                                         "body": body_text},
                           prune=True, keep=("Notes",))
         plan.put(rel, fm, body)
+    else:
+        plan.touch(rel)
+        note(f"{rel} already exists and was not changed; to add text run: "
+             f"brain append {folder.lower()} {slug} --file <file>")
     plan.execute()
 
 
@@ -523,12 +553,52 @@ def cmd_capture_person(ctx, mode, args):
     plan.execute()
 
 
+def cmd_capture_project(ctx, mode, args):
+    plan = Plan(ctx, mode)
+    slug = require_slug(slug_key(args.name, 5), "--name", args.name)
+    known = project_rels(plan.vault)
+    if slug in known:
+        rel = known[slug]
+        plan.touch(rel)
+        fm, _ = plan.load(rel)
+        if args.area and args.area != fm.get("area"):
+            note(f"{rel} keeps area={fm.get('area')}; to change it run: "
+                 f"brain set project {slug} --area {args.area}")
+        if args.context_file:
+            note(f"{rel} already exists; its context was not changed. To add "
+                 f"text run: brain append project {slug} --file {args.context_file}")
+    else:
+        fm = _base_fm("project", today().isoformat())
+        fm.update({"status": "active", "area": args.area or "internal"})
+        context = _read_file(args.context_file, "--context-file").strip() \
+            if args.context_file else ""
+        body = render("project", {"name": args.name.strip(),
+                                  "context": flatten_headings(context)},
+                      prune=True, keep=("Context", "Milestones"))
+        plan.put(f"Projects/{slug}.md", fm, body)
+    plan.execute()
+
+
 def cmd_capture_followup(ctx, mode, args):
     date = today().isoformat()
     plan = Plan(ctx, mode)
     slug = make_followup(plan, args.who, args.about, date)
     ensure_daily(plan, date, "Waiting On", f"- [[Follow-ups/{slug}]]")
     plan.execute()
+
+
+def promote_task(plan, rel, fm, week, date):
+    """backlog/done -> this-week for the owner's own task (shared with
+    `brain promote`)."""
+    me = owner_link()
+    if fm.get("owner") not in (None, "", me):
+        die(f"{rel} is owned by {fm['owner']}, not {me}. Only your own tasks "
+            "can be promoted; track someone else's with `query waiting-on`. "
+            "Nothing was written.")
+    fm["status"] = "this-week"
+    fm["week"] = week
+    ensure_daily(plan, date, "Priority Tasks", f"- [ ] [[{rel[:-3]}]]")
+
 
 
 def _load_task(plan, slug):
@@ -546,17 +616,8 @@ def cmd_promote(ctx, mode, args):
     date = today().isoformat()
     for slug in args.task:
         rel, (fm, body) = _load_task(plan, slug)
-        # Only the owner's own tasks enter their week.
-        me = owner_link()
-        if fm.get("owner") not in (None, "", me):
-            print(f"ERROR: Tasks/{slug}.md is owned by {fm['owner']}, not {me}. "
-                  "Only your own tasks can be promoted; track someone else's with "
-                  "`query waiting-on`. Nothing was written.", file=sys.stderr)
-            sys.exit(2)
-        fm["status"] = "this-week"
-        fm["week"] = week
+        promote_task(plan, rel, fm, week, date)
         plan.put(rel, fm, body)
-        ensure_daily(plan, date, "Priority Tasks", f"- [ ] [[Tasks/{slug}]]")
     plan.execute()
 
 

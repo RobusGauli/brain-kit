@@ -20,7 +20,7 @@
 # and a final `done.`.
 # No `done.` line means the install did not finish.
 #
-# Pin a version: `sh -s v1.1.0`, or BRAIN_KIT_REF=v1.1.0 (a tag, branch or
+# Pin a version: `sh -s v1.2.0`, or BRAIN_KIT_REF=v1.2.0 (a tag, branch or
 # commit; default: the latest release).
 #
 # Overrides: BRAIN_KIT_REF (see above),

@@ -20,3 +20,18 @@ def active_project_slugs(vault):
         if fm.get("type") == "project" and fm.get("status") == "active":
             out.append(f.stem)
     return sorted(set(out))
+
+
+def project_rels(vault):
+    """slug -> rel for every project note of any status. Mirrors the linter:
+    Projects/slug.md and Projects/slug/slug.md; other nested files are
+    reference material."""
+    d = vault / "Projects"
+    out = {}
+    if not d.is_dir():
+        return out
+    for f in sorted(d.rglob("*.md")):
+        parts = f.relative_to(vault).parts
+        if len(parts) == 2 or (len(parts) == 3 and parts[1] == f.stem):
+            out[f.stem] = "/".join(parts)
+    return out
