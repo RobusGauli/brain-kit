@@ -69,7 +69,7 @@ python3 "$B" status
 
 `init` never overwrites existing notes and is safe to run again. After it succeeds, tell the user that setup is done and give three things they can say: "add a task to …", "log this meeting: …", "what am I waiting on?"
 
-A write command creates every file the request needs in one step (note, tasks, follow-ups, people, daily links) and lints the result. Its `WROTE` / `UPDATED` / `UNCHANGED` / `LINKED` lines are your confirmation — relay them. If lint fails, the CLI writes nothing and prints `file:field:problem`. Fix the flags and run again.
+A write command creates every file the request needs in one step (note, tasks, follow-ups, people, daily links) and lints the result. Its `WROTE` / `UPDATED` / `UNCHANGED` / `LINKED` lines are your confirmation — relay them. A `MATCHED` line means the request landed on an existing task with different wording, so no new task was made: tell the user which task it matched. If lint fails, the CLI writes nothing and prints `file:field:problem`. Fix the flags and run again.
 
 ## Router
 

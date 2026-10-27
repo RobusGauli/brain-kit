@@ -155,6 +155,23 @@ assert_file "work/Tasks/client-repaint-north-fence-panels.md"
 "$BRAIN" capture task --desc "Repaint north fence panels near gate by Friday 2026-08-21" --area client >/dev/null
 n=$(ls "$BRAIN_ROOT/work/Tasks" | grep -c "repaint-north-fence-panels")
 [ "$n" = "1" ] && ok "slug_key collapses phrasing variants" || fail "slug_key variants ($n files)"
+# A request that lands on an existing task is never dropped silently.
+OUT=$("$BRAIN" capture task --desc "repaint the north fence panels near the gate before Friday" --area client)
+case "$OUT" in *MATCHED*) fail "same wording prints no MATCHED line" ;; *) ok "same wording prints no MATCHED line" ;; esac
+OUT=$("$BRAIN" capture task --desc "repaint north fence panels near gate by Monday" --area client)
+assert_contains "$OUT" "MATCHED work/Tasks/client-repaint-north-fence-panels.md: same task as \"repaint the north fence panels near the gate before Friday\"" \
+  "different wording prints a MATCHED line naming the existing task"
+assert_contains "$OUT" "\"repaint north fence panels near gate by Monday\"" "MATCHED line quotes the new wording"
+OUT=$("$BRAIN" capture task --desc "repaint the north fence panels near the gate before Friday" --area client --priority high)
+assert_contains "$OUT" "UPDATED work/Tasks/client-repaint-north-fence-panels.md" "explicit priority updates the matched task"
+grep -q "^priority: high" "$BRAIN_ROOT/work/Tasks/client-repaint-north-fence-panels.md" \
+  && ok "matched task takes the explicit priority" || fail "matched task priority"
+"$BRAIN" capture task --desc "repaint the north fence panels near the gate before Friday" --area client >/dev/null
+grep -q "^priority: high" "$BRAIN_ROOT/work/Tasks/client-repaint-north-fence-panels.md" \
+  && ok "omitted priority keeps the matched task's priority" || fail "omitted priority reset"
+"$BRAIN" extract-tasks --task "repaint the north fence panels near the gate before Friday|client" >/dev/null
+grep -q "^priority: high" "$BRAIN_ROOT/work/Tasks/client-repaint-north-fence-panels.md" \
+  && ok "task spec without priority keeps the matched task's priority" || fail "spec priority reset"
 printf 'Practising washes from a library book; paper in the hall cupboard.\n' > "$BRAIN_ROOT/paint.txt"
 "$BRAIN" capture note --title "started learning watercolor" --body-file "$BRAIN_ROOT/paint.txt" >/dev/null
 assert_file "work/Reference/started-learning-watercolor.md"
@@ -419,8 +436,10 @@ WANT=1 expect_refused "same title in another area is a duplicate task (lint refu
   eb capture task --desc "Draft the rewrite plan v2" --area internal --priority high
 eb capture task --desc "Draft rewrite plan v3" --area client >/dev/null
 OUT=$(eb capture task --desc "Draft rewrite plan v3" --area client --priority high 2>&1)
-assert_contains "$OUT" "keeps priority=medium" "capture task hints when a value was not applied"
-assert_contains "$OUT" "brain set task client-draft-rewrite-plan-v3 --priority high" "hint names the exact set command"
+assert_contains "$OUT" "UPDATED work/Tasks/client-draft-rewrite-plan-v3.md" "an explicit priority updates the matched task"
+OUT=$(eb capture task --desc "Draft rewrite plan v3" --area client --owner "Sam Ortiz" 2>&1)
+assert_contains "$OUT" "keeps owner=" "capture task hints when an owner was not applied"
+assert_contains "$OUT" "brain set task client-draft-rewrite-plan-v3 --owner" "hint names the exact set command"
 
 # project lifecycle
 eb set project harbor-rewrite --status paused >/dev/null

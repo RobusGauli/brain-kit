@@ -38,7 +38,13 @@ be edited by hand.
   nothing and silently dropped the new text. It now prints `UNCHANGED` plus a
   `NOTE:` on stderr that names the `set` or `append` command to use. Other
   captures print the same `NOTE:` when a value they were given was not applied
-  (task priority, person role or email).
+  (a task's project or owner, a person's role or email).
+- A task request that maps to an existing task's filename is no longer
+  dropped silently. An explicit priority (`--priority`, or the third field of
+  `--task`) now updates the existing task, and different wording prints a
+  `MATCHED` line naming the existing task. Before this, both cases printed
+  `UNCHANGED`. A `--task` spec with no priority no longer resets an existing
+  task to `medium`.
 - The same task title under a different `--area` wrote a duplicate task file;
   only `lint` caught it afterwards. The write is now refused.
 - `capture interview --verdict` and `capture person --org` updated the

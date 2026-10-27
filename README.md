@@ -238,7 +238,9 @@ brain doctor [--vault work|personal|both]   # lint errors, broken links, orphans
 ```
 
 Write commands print one `WROTE` / `UPDATED` / `UNCHANGED` / `LINKED` line per
-note. On a lint failure they print `file:field:problem`, write nothing, and
+note. A `MATCHED` line follows when a task request, worded differently, maps to
+an existing task's filename: no second task is made, and the line names both
+wordings. On a lint failure they print `file:field:problem`, write nothing, and
 exit 1.
 
 Dates must be real calendar dates in `YYYY-MM-DD` form; anything else is

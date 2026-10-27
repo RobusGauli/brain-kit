@@ -4,7 +4,8 @@ Every mutation goes through a Plan. Plan.execute():
   1. lints every pending note against (disk index ∪ pending set)
   2. refuses (exit 1, nothing written) on any lint error
   3. writes all files (mkdir -p parents), rolling back on I/O error
-  4. prints sorted `WROTE|UPDATED|UNCHANGED <vault>/<rel>` lines
+  4. prints sorted `WROTE|UPDATED|UNCHANGED <vault>/<rel>` lines, then any
+     `MATCHED` notices (a request that landed on an existing note)
 """
 
 import re
@@ -100,6 +101,7 @@ class Plan:
         self.vault = Path(ctx.vault(mode))
         self.pending = {}  # rel -> (fm, body)
         self.linked = set()  # existing notes reused untouched -> LINKED lines
+        self.notices = []  # MATCHED lines, printed after the verb lines
 
     def load(self, rel):
         """Current (fm, body) — pending wins over disk. None if absent."""
@@ -144,6 +146,11 @@ class Plan:
             else:
                 titles[key] = rel
         return errors
+
+    def notice(self, rel, text):
+        line = f"MATCHED {self.mode}/{rel}: {text}"
+        if line not in self.notices:
+            self.notices.append(line)
 
     def _drop_noise_dailies(self):
         """Never create a brand-new daily note that nothing links into: an
@@ -208,4 +215,6 @@ class Plan:
             written.append(("LINKED", rel))
         for verb, rel in sorted(written, key=lambda x: x[1]):
             print(f"{verb} {self.mode}/{rel}")
+        for line in self.notices:
+            print(line)
         return written
