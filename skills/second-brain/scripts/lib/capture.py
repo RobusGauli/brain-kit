@@ -210,7 +210,17 @@ def make_task(plan, desc, area, priority, project, source, date,
         plan.put(rel, fm, body)
         note_seen(plan, owner_link.strip("[]"), f"[[Tasks/{slug}]]")
     else:
+        # Phrasing variants share a slug on purpose, so this request is the
+        # existing task. Never drop what the user said without saying so: an
+        # explicit priority is applied, and different wording is reported.
         fm, body = existing
+        if priority and fm.get("priority") != priority:
+            fm["priority"] = priority
+        title = next((l[2:].strip() for l in body.split("\n")
+                      if l.startswith("# ")), "")
+        if slug_key(title, None) != slug_key(desc, None):
+            plan.notice(rel, f'same task as "{title}"; not added as a new '
+                             f'task: "{desc.strip()}"')
         if fm.get("project") in (None, "") and project:
             fm["project"] = project
         if fm.get("source") in (None, "") and source:
@@ -276,11 +286,12 @@ def make_followup(plan, who, about, date):
 
 def _task_spec(spec):
     """'desc|area|priority|owner' -> (desc, area, priority, owner). Only the
-    first field is required; the rest default."""
+    first field is required; the rest default. An omitted priority stays
+    None so it never overrides an existing task's priority."""
     parts = [p.strip() for p in spec.split("|")]
     desc = parts[0]
     area = parts[1] if len(parts) > 1 and parts[1] else "internal"
-    prio = parts[2] if len(parts) > 2 and parts[2] else "medium"
+    prio = parts[2] if len(parts) > 2 and parts[2] else None
     owner = parts[3] if len(parts) > 3 and parts[3] else None
     return desc, area, prio, owner
 

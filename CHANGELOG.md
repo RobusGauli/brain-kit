@@ -4,6 +4,16 @@ All notable changes to brain-kit. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+- A task request that maps to an existing task's filename is no longer
+  dropped silently. An explicit priority (`--priority`, or the third field of
+  `--task`) now updates the existing task, and different wording prints a
+  `MATCHED` line naming the existing task. Before this, both cases printed
+  `UNCHANGED`. A `--task` spec with no priority no longer resets an existing
+  task to `medium`.
+
 ## [1.1.0] - 2026-10-27
 
 ### Added
